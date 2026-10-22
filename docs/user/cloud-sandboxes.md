@@ -5,11 +5,11 @@ runs every sandbox in the EU, and a running sandbox bills that account until
 you stop or delete it.
 
 The key must allow creating, resuming, and deleting sandboxes as well as running commands,
-reading and writing files, hosting ports, and reading and saving snapshots. Boat's `full-sandbox` preset does
+reading and writing files, hosting ports, reading and saving snapshots, and opening a VM's desktop. Boat's `full-sandbox` preset does
 not include create or delete. With the Boat CLI, create a key with:
 
 ```sh
-boat api-key create t3code --actions sandbox.create,sandbox.read,sandbox.update,sandbox.stop,sandbox.resume,sandbox.delete,exec,file.read,file.write,host,snapshot.read,snapshot.write,account.read
+boat api-key create t3code --actions sandbox.create,sandbox.read,sandbox.update,sandbox.stop,sandbox.resume,sandbox.delete,exec,file.read,file.write,host,snapshot.read,snapshot.write,account.read,desktop
 ```
 
 boat's stop timer is a deadline from the last start, not a measure of idle
@@ -103,7 +103,9 @@ In a new thread whose project has a Git remote, open **Run on** and choose
 `t3-<owner>-<repo>` (lowercase), else the **Base snapshot** (`t3-base` by
 default), else a plain VM. It checks the repository out at `~/work/<repo>` and
 joins the tailnet when Tailscale is set up. Cancelling a start deletes a new
-VM, as a failed start does; an earlier VM is kept.
+VM, as a failed start does; an earlier VM is kept. A **No project** thread can
+run on a boat VM too: it starts from the **Base snapshot**, else a plain VM, and
+stays a **No project** thread on the VM.
 
 To make a snapshot, set a VM up, then choose **Save boat VM as snapshot** in
 the command palette and pick the VM. The name defaults to `t3-<owner>-<repo>`,
@@ -130,6 +132,11 @@ app quits.
 **Bring boat VM work home** in the command palette fetches the VM's branches
 into the local checkout as `refs/t3/boat/<vm-id>/<branch>`. Nothing is pushed.
 Uncommitted files stay on the VM.
+
+In a thread on a boat VM, **Boat desktop** in the panel's **+** menu (V)
+shows the VM's screen. The first open can take a minute while boat starts
+the desktop. Treat its link like a password: anyone with it can see the
+desktop.
 
 ## Shared options
 

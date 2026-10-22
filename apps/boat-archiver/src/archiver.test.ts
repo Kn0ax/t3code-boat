@@ -201,6 +201,40 @@ describe("runPass", () => {
     });
   });
 
+  it.effect("keeps tracking a thread whose snapshot could not be read", () => {
+    const calls: Array<string> = [];
+    const imported: Array<string> = [];
+    const home: HomeServer = {
+      importThread: (input) => Effect.sync(() => void imported.push(input.originKey)),
+    };
+    const vms = [vm("vm1", "running")];
+    return Effect.gen(function* () {
+      const first = yield* runPass({
+        provider: fakeProvider({ vms, active: [], snapshot: "not json", calls }),
+        home,
+        state: { threadsByVm: { vm1: ["t1"] }, copied: [] },
+        nowMs,
+        idleMinutes: 30,
+      });
+      assert.equal(first.reports[0]?.action, "kept");
+
+      const second = yield* runPass({
+        provider: fakeProvider({
+          vms,
+          active: [],
+          snapshot: snapshotOf({ archivedAt: minutesAgo(1) }),
+          calls,
+        }),
+        home,
+        state: first.state,
+        nowMs,
+        idleMinutes: 30,
+      });
+      assert.deepEqual(imported, ["boat-vm:vm1:t1"]);
+      assert.equal(second.reports[0]?.action, "delete");
+    });
+  });
+
   it.effect("stops a VM whose threads have been quiet", () => {
     const calls: Array<string> = [];
     return Effect.gen(function* () {

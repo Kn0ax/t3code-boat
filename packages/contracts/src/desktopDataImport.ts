@@ -5,6 +5,8 @@ export const DesktopT3DataImportStateSchema = Schema.Struct({
   sourcePath: Schema.String,
   available: Schema.Boolean,
   imported: Schema.Boolean,
+  /** Whether that copy included projects and threads; older shells leave it out. */
+  importedProjects: Schema.optionalKey(Schema.Boolean),
   lastError: Schema.optionalKey(Schema.String),
 });
 export type DesktopT3DataImportState = typeof DesktopT3DataImportStateSchema.Type;

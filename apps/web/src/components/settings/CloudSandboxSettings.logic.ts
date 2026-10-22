@@ -23,7 +23,7 @@ export interface SandboxProviderOption {
   readonly idleNote: string | null;
 }
 
-export const SANDBOX_PROVIDER_OPTIONS: ReadonlyArray<SandboxProviderOption> = [
+const SANDBOX_PROVIDER_OPTIONS: ReadonlyArray<SandboxProviderOption> = [
   {
     id: "boat",
     label: "boat",

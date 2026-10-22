@@ -46,11 +46,10 @@ const COPIED_ITEM_TYPES: ReadonlySet<string> = new Set([
   "error",
 ]);
 
-export const importedThreadId = (originKey: string): ThreadId =>
-  ThreadId.make(`import:${originKey}`);
+const importedThreadId = (originKey: string): ThreadId => ThreadId.make(`import:${originKey}`);
 
 /** The events that create the copy of `snapshot` as thread `threadId` in `projectId`. */
-export function importedThreadEvents(input: {
+function importedThreadEvents(input: {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
@@ -165,7 +164,7 @@ export class ThreadImportService extends Context.Service<
   }
 >()("t3/orchestration-v2/ThreadImportService") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const eventSink = yield* EventSink.EventSinkV2;

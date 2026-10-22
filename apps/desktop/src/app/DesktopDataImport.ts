@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -28,6 +29,9 @@ const IMPORT_TIMEOUT = Duration.minutes(15);
 const MAX_ERROR_LENGTH = 2_000;
 
 const RequestJson = Schema.fromJsonString(DesktopT3DataImportInputSchema);
+const decodeMarker = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ parts: Schema.Array(Schema.String) })),
+);
 const decodeRequest = Schema.decodeUnknownEffect(RequestJson);
 const encodeRequest = Schema.encodeEffect(RequestJson);
 
@@ -55,7 +59,17 @@ export const readState = Effect.fn("desktop.dataImport.readState")(function* (in
     (yield* canonical(fs, sourcePath)) === (yield* canonical(fs, input.baseDir));
   const available =
     !sameDirectory && (yield* exists(path.join(sourcePath, "userdata", "statev2.sqlite")));
-  const imported = yield* exists(path.join(input.baseDir, ...MARKER_PATH));
+  const marker = yield* fs
+    .readFileString(path.join(input.baseDir, ...MARKER_PATH))
+    .pipe(Effect.option);
+  const imported = Option.isSome(marker);
+  // A marker without readable parts predates them; treat it as a full copy, as before.
+  const importedProjects =
+    imported &&
+    (yield* decodeMarker(marker.value).pipe(
+      Effect.map(({ parts }) => parts.includes("projects")),
+      Effect.orElseSucceed(() => true),
+    ));
   const lastError = yield* fs
     .readFileString(path.join(input.baseDir, ERROR_FILENAME))
     .pipe(Effect.orElseSucceed(() => ""));
@@ -63,6 +77,7 @@ export const readState = Effect.fn("desktop.dataImport.readState")(function* (in
     sourcePath,
     available,
     imported,
+    importedProjects,
     ...(lastError.trim() === "" ? {} : { lastError: lastError.trim() }),
   } satisfies DesktopT3DataImportState;
 });

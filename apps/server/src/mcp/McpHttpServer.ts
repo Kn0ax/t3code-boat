@@ -1059,7 +1059,7 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
-export const layerSandboxToolkit = toolkitRegistration(SandboxToolkit, SandboxHandlers.layer);
+const layerSandboxToolkit = toolkitRegistration(SandboxToolkit, SandboxHandlers.layer);
 
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",

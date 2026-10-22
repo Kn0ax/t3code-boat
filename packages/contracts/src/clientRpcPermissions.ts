@@ -51,6 +51,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatVmsSaveSnapshot]: AuthOrchestrationOperateScope,
   // Removes a new VM the launch made.
   [WS_METHODS.boatVmsCancelLaunch]: AuthOrchestrationOperateScope,
+  // Hands out a URL that carries a token for the VM's desktop.
+  [WS_METHODS.boatVmsDesktop]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,

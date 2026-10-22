@@ -48,6 +48,14 @@ export interface BoatCatalogClient {
     request: { readonly sandboxId: string; readonly name: string },
     options?: BoatCallOptions,
   ) => Promise<{ readonly snapshot: BoatNamedSnapshot }>;
+  readonly desktop: (sandboxId: string, options?: BoatCallOptions) => Promise<BoatDesktopResponse>;
+}
+
+/** The fields of the SDK's `DesktopResponse` the catalog reads. `desktopUrl` carries a secret. */
+export interface BoatDesktopResponse {
+  readonly desktopUrl?: string | null;
+  readonly mode?: string;
+  readonly provisioning?: boolean;
 }
 
 export const BoatCatalogOperation = Schema.Literals([
@@ -55,6 +63,7 @@ export const BoatCatalogOperation = Schema.Literals([
   "listEnvironments",
   "saveSnapshot",
   "snapshotStatus",
+  "desktop",
 ]);
 export type BoatCatalogOperation = typeof BoatCatalogOperation.Type;
 
@@ -63,6 +72,7 @@ const OPERATION_TEXT: Readonly<Record<BoatCatalogOperation, string>> = {
   listEnvironments: "list the environments",
   saveSnapshot: "save the snapshot",
   snapshotStatus: "read the snapshot",
+  desktop: "open the desktop",
 };
 
 /** Like `SandboxProviderError`: boat's text can quote request details, so only the label travels. */
@@ -81,6 +91,11 @@ export interface BoatSnapshotState {
   readonly status: string;
 }
 
+/** `url` is secret-bearing: hand it to the user, never to a log or span. */
+export type BoatDesktop =
+  | { readonly status: "ready"; readonly url: string; readonly mode?: string }
+  | { readonly status: "provisioning" };
+
 export interface BoatCatalogShape {
   readonly snapshots: Effect.Effect<ReadonlyArray<BoatNamedSnapshot>, BoatCatalogError>;
   readonly environments: Effect.Effect<ReadonlyArray<BoatEnvironmentSummary>, BoatCatalogError>;
@@ -89,6 +104,8 @@ export interface BoatCatalogShape {
     readonly name: string;
   }) => Effect.Effect<BoatSnapshotState, BoatCatalogError>;
   readonly snapshotStatus: (name: string) => Effect.Effect<BoatSnapshotState, BoatCatalogError>;
+  /** Not ready yet answers `provisioning`; ask again. */
+  readonly desktop: (sandboxId: string) => Effect.Effect<BoatDesktop, BoatCatalogError>;
 }
 
 const snapshotState = (snapshot: BoatNamedSnapshot): BoatSnapshotState => ({
@@ -144,6 +161,23 @@ export function makeBoatCatalogFromClient(client: BoatCatalogClient): BoatCatalo
       call("snapshotStatus", (options) => client.getNamedSnapshot(name, options)).pipe(
         Effect.map((response) => snapshotState(response.snapshot)),
       ),
+    desktop: (sandboxId) =>
+      call("desktop", (options) => client.desktop(sandboxId, options)).pipe(
+        Effect.flatMap((response): Effect.Effect<BoatDesktop, BoatCatalogError> => {
+          if (response.provisioning === true) return Effect.succeed({ status: "provisioning" });
+          const url = response.desktopUrl?.trim();
+          if (url === undefined || url === "") {
+            return Effect.fail(
+              new BoatCatalogError({ operation: "desktop", failure: "provider-error" }),
+            );
+          }
+          return Effect.succeed({
+            status: "ready",
+            url,
+            ...(response.mode === undefined ? {} : { mode: response.mode }),
+          });
+        }),
+      ),
   };
 }
 
@@ -160,6 +194,8 @@ export function boatCatalog(apiKey: Redacted.Redacted<string>): Effect.Effect<Bo
       environments: (options) => api.environments(init(options)),
       saveNamedSnapshot: (request, options) =>
         api.saveNamedSnapshot({ namedSnapshotSaveRequest: request }, init(options)),
+      // No `vnc`: boat's default desktop stream, not noVNC. No `publicAccess`: the URL keeps its token.
+      desktop: (sandboxId, options) => api.desktop({ sandboxId }, init(options)),
     });
   });
 }

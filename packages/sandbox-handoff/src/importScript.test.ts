@@ -267,6 +267,8 @@ describe("buildSandboxImportScript", () => {
       git(diverged, ["add", "sandbox-only.txt"]);
       git(diverged, ["commit", "--quiet", "-m", "sandbox commit"]);
       assert.equal(runScript(build(diverged)).exitCode, SANDBOX_IMPORT_EXIT_CODES.branchDiverged);
+      // A retry is refused the same way, not taken for a finished import.
+      assert.equal(runScript(build(diverged)).exitCode, SANDBOX_IMPORT_EXIT_CODES.branchDiverged);
 
       const real = NodePath.join(scratch, "real");
       NodeFS.mkdirSync(real);

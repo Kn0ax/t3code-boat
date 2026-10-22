@@ -8,8 +8,8 @@
 import {
   BoatVmError,
   type BoatVmCatalog,
+  type BoatVmDesktopInput,
   type BoatVmSaveSnapshotInput,
-  type BoatVmSnapshotStatusInput,
   type SandboxJobSettings,
 } from "@t3tools/contracts";
 import type { BoatCatalogShape } from "@t3tools/sandbox-boat";
@@ -88,12 +88,16 @@ export const makeOperations = (
     ),
   );
 
-  const snapshotStatus = Effect.fn("BoatVmService.snapshotStatus")(function* (
-    input: BoatVmSnapshotStatusInput,
-  ) {
-    const account = yield* requireCatalog;
-    return yield* account.snapshotStatus(input.name).pipe(Effect.mapError(toVmError));
-  });
+  // Only the failure is logged: a ready answer's URL carries the desktop's access token.
+  const desktop = Effect.fn("BoatVmService.desktop")(
+    function* (input: BoatVmDesktopInput) {
+      const account = yield* requireCatalog;
+      return yield* account.desktop(input.sandboxId).pipe(Effect.mapError(toVmError));
+    },
+    Effect.tapError((error) =>
+      Effect.logWarning("boat.vm.desktop.failed", { error: error.message }),
+    ),
+  );
 
-  return { catalog, saveSnapshot, snapshotStatus };
+  return { catalog, saveSnapshot, desktop };
 };

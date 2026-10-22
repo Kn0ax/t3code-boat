@@ -459,6 +459,61 @@ describe("BoatVmService", () => {
     }),
   );
 
+  it.effect("gives a launch without a repository a scratch folder and no repository snapshot", () =>
+    Effect.gen(function* () {
+      for (const [boatVmBaseSnapshot, snapshots, expected] of [
+        ["t3-base", ["t3-base"], ["t3-base"]],
+        ["t3-base", [], ["t3-base", undefined]],
+        ["", [], [undefined]],
+      ] as const) {
+        const { record, layer } = makeHarness({ snapshots, settings: { boatVmBaseSnapshot } });
+        const launched = yield* Effect.gen(function* () {
+          return yield* (yield* BoatVmService.BoatVmService).launch({});
+        }).pipe(Effect.provide(layer));
+
+        assert.deepEqual(
+          record.targets.map((target) => target.snapshot),
+          [...expected],
+        );
+        assert.equal(record.targets[0]!.label, "vm scratch");
+        // No sync, so no sync env file with the keys.
+        assert.deepEqual(record.written, []);
+        assert.deepEqual(launched, {
+          sandboxId: "new",
+          label: "scratch",
+          httpBaseUrl: "https://t3-vm-new.tail.ts.net",
+          pairingCode: "pair-new",
+          workspaceRoot: NodePath.join(homeOf("new"), ".t3", "scratch"),
+        });
+        assert.isTrue(NodeFS.statSync(launched.workspaceRoot).isDirectory());
+        assert.isFalse(NodeFS.existsSync(NodePath.join(homeOf("new"), "work")));
+        NodeFS.rmSync(homeOf("new"), { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("resumes an existing VM without a repository into its scratch folder", () => {
+    const { record, layer } = makeHarness({});
+    return Effect.gen(function* () {
+      const launched = yield* (yield* BoatVmService.BoatVmService).launch({ sandboxId: "old" });
+
+      assert.deepEqual(record.reconnects, ["old"]);
+      assert.deepEqual(record.targets, []);
+      assert.equal(launched.workspaceRoot, NodePath.join(homeOf("old"), ".t3", "scratch"));
+      assert.isTrue(NodeFS.statSync(launched.workspaceRoot).isDirectory());
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("names only the base snapshot when a launch without a repository finds none", () => {
+    const { layer } = makeHarness({
+      settings: { tailscaleAuthKey: "", boatVmTailscale: "snapshot", boatVmBaseSnapshot: "" },
+    });
+    return Effect.gen(function* () {
+      const error = yield* (yield* BoatVmService.BoatVmService).launch({}).pipe(Effect.flip);
+      assert.include(error.message, "Set a Base snapshot");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("removes a new VM whose launch fails, but keeps a resumed one", () =>
     Effect.gen(function* () {
       const missing = { ...repository(), remoteUrl: "/nonexistent/repository.git" };
@@ -548,9 +603,13 @@ describe("BoatVmService", () => {
       yield* Effect.gen(function* () {
         const vms = yield* BoatVmService.BoatVmService;
         launches = vms.launches;
-        for (const sandboxId of [undefined, "old"]) {
+        for (const [sandboxId, withRepository] of [
+          [undefined, true],
+          ["old", true],
+          [undefined, false],
+        ] as const) {
           yield* vms.launch({
-            repository: repository(),
+            ...(withRepository ? { repository: repository() } : {}),
             launchId: "launch-1",
             ...(sandboxId === undefined ? {} : { sandboxId }),
           });
@@ -569,6 +628,11 @@ describe("BoatVmService", () => {
         "starting old running",
         "tailscale old running",
         "syncing old done",
+        "creating t3-base new running",
+        "installing new running",
+        "starting new running",
+        "tailscale new running",
+        "preparing new done",
       ]);
     }),
   );

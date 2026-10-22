@@ -7,12 +7,12 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 
 type ConnectionMode = SandboxJobSettings["boatVmConnectionMode"];
 
-export const CONNECTION_LABELS: Readonly<Record<ConnectionMode, string>> = {
+const CONNECTION_LABELS: Readonly<Record<ConnectionMode, string>> = {
   boat: "Protected Boat URL",
   tailscale: "Tailscale",
 };
 
-export const TAILSCALE_LABELS: Readonly<Record<BoatVmTailscaleMode, string>> = {
+const TAILSCALE_LABELS: Readonly<Record<BoatVmTailscaleMode, string>> = {
   off: "Off",
   "auth-key": "Auth key",
   snapshot: "Snapshot joins itself",

@@ -558,6 +558,11 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
         const finished = yield* withJobLock(
           jobId,
           Effect.gen(function* () {
+            // Expiry may have collected the job while this waited for the lock.
+            if ((yield* getJob(jobId)).state !== "running") {
+              yield* signalSettled(jobId);
+              return true;
+            }
             const detail = yield* callNode(
               connection,
               "t3_thread_read",
@@ -824,12 +829,13 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
     wait: boolean | undefined,
     timeoutMs: number | undefined,
   ) {
+    // Taken before the state is read, so a run that settles in between still completes it.
+    const signal = wait === true ? yield* settledSignal(jobId) : undefined;
     const job = yield* getJob(jobId);
     const busy =
       job.state === "running" || job.state === "provisioning" || job.state === "preparing";
-    if (wait !== true || !busy)
+    if (signal === undefined || !busy)
       return { job: SandboxJobStore.toPublicJob(job), waitTimedOut: false };
-    const signal = yield* settledSignal(jobId);
     const settled = yield* Deferred.await(signal).pipe(
       Effect.timeoutOption(Duration.millis(timeoutMs ?? DEFAULT_WAIT_MS)),
     );
@@ -838,6 +844,22 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
       waitTimedOut: Option.isNone(settled),
     };
   });
+
+  const startLock = yield* Semaphore.make(1);
+  const requireCapacity = (maxActiveJobs: number) =>
+    store.list({ includeFinished: false }).pipe(
+      Effect.mapError(storeFailure),
+      Effect.flatMap((active) =>
+        active.length >= maxActiveJobs
+          ? Effect.fail(
+              fail(
+                "sandbox_limit_reached",
+                `${active.length} sandbox jobs are open, the most this environment allows. Complete or discard one first.`,
+              ),
+            )
+          : Effect.void,
+      ),
+    );
 
   const start = Effect.fn("SandboxJobService.start")(function* (
     input: SandboxJobStartInput,
@@ -858,15 +880,7 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
       if (existing !== undefined)
         return yield* waitForRun(existing.jobId, input.wait, input.timeoutMs);
     }
-    const active = yield* store
-      .list({ includeFinished: false })
-      .pipe(Effect.mapError(storeFailure));
-    if (active.length >= settings.maxActiveJobs) {
-      return yield* fail(
-        "sandbox_limit_reached",
-        `${active.length} sandbox jobs are open, the most this environment allows. Complete or discard one first.`,
-      );
-    }
+    yield* requireCapacity(settings.maxActiveJobs);
     const providerId = input.provider ?? "boat";
     if (settings.providerKeys.boat.trim() === "") {
       return yield* fail(
@@ -948,7 +962,18 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
       createdAt: DateTime.formatIso(createdAt),
       updatedAt: DateTime.formatIso(createdAt),
     };
-    yield* store.insert(record).pipe(Effect.mapError(storeFailure));
+    // Checked again with the insert, so concurrent starts cannot both take the last slot.
+    yield* startLock
+      .withPermits(1)(
+        requireCapacity(settings.maxActiveJobs).pipe(
+          Effect.andThen(store.insert(record).pipe(Effect.mapError(storeFailure))),
+        ),
+      )
+      .pipe(
+        Effect.tapError(() =>
+          fileSystem.remove(stagingDir, { recursive: true }).pipe(Effect.ignore),
+        ),
+      );
     yield* settledSignal(jobId);
     yield* Effect.forkIn(withJobLock(jobId, bringUp(jobId, snapshot.bundlePath)), scope);
     return yield* waitForRun(jobId, input.wait, input.timeoutMs);
@@ -1246,10 +1271,28 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
           job.jobId,
           Effect.gen(function* () {
             const current = yield* getJob(job.jobId);
-            if (current.state === "running" && current.activeThreadId !== null) {
-              yield* cancel(current.jobId).pipe(Effect.ignore);
-            }
-            yield* collectAndDestroy(yield* getJob(job.jobId), {}).pipe(
+            const activeThreadId = current.state === "running" ? current.activeThreadId : null;
+            const stopRun = Effect.gen(function* () {
+              if (activeThreadId === null) return;
+              yield* cancel(current.jobId);
+              // An interrupt only acknowledges dispatch; the agent can still write
+              // files until the node reports the run ended.
+              const waited = yield* callNode(
+                yield* ensureConnected(current),
+                "t3_thread_wait",
+                { threadId: activeThreadId, timeoutMs: NODE_WAIT_SLICE_MS },
+                OrchestratorMcpThreadWaitResult,
+              );
+              if (waited.timedOut) {
+                return yield* fail(
+                  "sandbox_failed",
+                  "The expired job's run did not stop after it was interrupted.",
+                );
+              }
+            });
+            yield* stopRun.pipe(
+              Effect.andThen(getJob(job.jobId)),
+              Effect.flatMap((latest) => collectAndDestroy(latest, {})),
               Effect.tapError((error) =>
                 Effect.gen(function* () {
                   yield* update(job.jobId, {

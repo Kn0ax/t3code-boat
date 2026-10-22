@@ -54,6 +54,7 @@ describe("DesktopDataImport", () => {
           sourcePath: NodePath.join(root, ".t3"),
           available: false,
           imported: false,
+          importedProjects: false,
         });
 
         writeFile(NodePath.join(root, ".t3", "userdata", "statev2.sqlite"), "");
@@ -61,6 +62,15 @@ describe("DesktopDataImport", () => {
         const state = yield* DesktopDataImport.readState({ homeDirectory: root, baseDir });
         assert.isTrue(state.available);
         assert.isTrue(state.imported);
+        assert.isTrue(state.importedProjects);
+
+        writeFile(
+          NodePath.join(baseDir, "userdata", "imported-from.json"),
+          JSON.stringify({ from: "/x", importedAt: "now", parts: ["settings"] }),
+        );
+        const settingsOnly = yield* DesktopDataImport.readState({ homeDirectory: root, baseDir });
+        assert.isTrue(settingsOnly.imported);
+        assert.isFalse(settingsOnly.importedProjects);
 
         const sameHome = yield* DesktopDataImport.readState({
           homeDirectory: root,

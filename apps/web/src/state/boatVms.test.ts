@@ -2,7 +2,7 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
-import { boatVmInitialTransport, boatVmRunOnOptions } from "./boatVms";
+import { boatVmDraftLaunch, boatVmInitialTransport, boatVmRunOnOptions } from "./boatVms";
 
 describe("boatVmInitialTransport", () => {
   it.each([
@@ -157,5 +157,36 @@ describe("boatVmRunOnOptions", () => {
       ["boat-vm:bx_stop", "boat: acme/app (stopped)"],
       ["boat-vm:new", "New boat VM"],
     ]);
+  });
+});
+
+describe("boatVmDraftLaunch", () => {
+  const repositoryIdentity = {
+    canonicalKey: "github.com/acme/app",
+    locator: {
+      source: "git-remote" as const,
+      remoteName: "origin",
+      remoteUrl: "https://github.com/acme/app.git",
+    },
+    owner: "acme",
+    name: "app",
+  };
+
+  it("launches a project draft with its repository", () => {
+    expect(
+      boatVmDraftLaunch({ isDraft: true, project: { repositoryIdentity }, isScratch: false }),
+    ).toEqual({ remoteUrl: "https://github.com/acme/app.git", owner: "acme", name: "app" });
+  });
+
+  it("launches a No project draft without a repository", () => {
+    expect(boatVmDraftLaunch({ isDraft: true, project: {}, isScratch: true })).toBe("scratch");
+  });
+
+  it.each([
+    ["a project without a remote", { isDraft: true, project: {}, isScratch: false }],
+    ["a thread that is no longer a draft", { isDraft: false, project: {}, isScratch: true }],
+    ["a draft without a project", { isDraft: true, project: null, isScratch: false }],
+  ] as const)("starts nothing for %s", (_, input) => {
+    expect(boatVmDraftLaunch(input)).toBeNull();
   });
 });

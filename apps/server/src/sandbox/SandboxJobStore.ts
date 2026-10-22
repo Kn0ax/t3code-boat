@@ -202,7 +202,7 @@ export class SandboxJobStore extends Context.Service<
   }
 >()("t3/sandbox/SandboxJobStore") {}
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const fail = (cause: unknown) => new SandboxJobStoreError({ cause });
 

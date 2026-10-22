@@ -24,6 +24,15 @@ describe("resolveOnboardingSteps", () => {
     ).toEqual(["connection", "agents", "boat"]);
   });
 
+  it("still offers project import after a copy without projects", () => {
+    expect(
+      resolveOnboardingSteps({
+        dataImport: { ...officialData, imported: true, importedProjects: false },
+        boatSupported: false,
+      }),
+    ).toEqual(["connection", "agents", "import"]);
+  });
+
   it("keeps the original steps outside the desktop app and without Boat support", () => {
     expect(resolveOnboardingSteps({ dataImport: null, boatSupported: false })).toEqual([
       "connection",

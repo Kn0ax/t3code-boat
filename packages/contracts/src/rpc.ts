@@ -362,6 +362,8 @@ import {
   BoatVmBringHomeInput,
   BoatVmBringHomeResult,
   BoatVmCatalog,
+  BoatVmDesktop,
+  BoatVmDesktopInput,
   BoatVmError,
   BoatVmLaunchInput,
   BoatVmLaunchListEvent,
@@ -369,7 +371,6 @@ import {
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
   BoatVmSnapshotState,
-  BoatVmSnapshotStatusInput,
 } from "./boatVms.ts";
 import {
   ProjectCloneActionInput,
@@ -582,8 +583,8 @@ export const WS_METHODS = {
   boatVmsBringHome: "boatVms.bringHome",
   boatVmsCatalog: "boatVms.catalog",
   boatVmsSaveSnapshot: "boatVms.saveSnapshot",
-  boatVmsSnapshotStatus: "boatVms.snapshotStatus",
   boatVmsCancelLaunch: "boatVms.cancelLaunch",
+  boatVmsDesktop: "boatVms.desktop",
   subscribeBoatVmLaunches: "subscribeBoatVmLaunches",
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
@@ -1217,15 +1218,9 @@ const WsBoatVmsCatalogRpc = Rpc.make(WS_METHODS.boatVmsCatalog, {
   error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
 });
 
-// Starts saving a VM as a named snapshot; poll snapshotStatus until ready or failed.
+// Starts saving a VM as a named snapshot; poll the catalog until it is ready or failed.
 const WsBoatVmsSaveSnapshotRpc = Rpc.make(WS_METHODS.boatVmsSaveSnapshot, {
   payload: BoatVmSaveSnapshotInput,
-  success: BoatVmSnapshotState,
-  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
-});
-
-const WsBoatVmsSnapshotStatusRpc = Rpc.make(WS_METHODS.boatVmsSnapshotStatus, {
-  payload: BoatVmSnapshotStatusInput,
   success: BoatVmSnapshotState,
   error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
 });
@@ -1235,6 +1230,12 @@ const WsBoatVmsCancelLaunchRpc = Rpc.make(WS_METHODS.boatVmsCancelLaunch, {
   payload: BoatVmCancelLaunchInput,
   success: BoatVmCancelLaunchResult,
   error: EnvironmentAuthorizationError,
+});
+
+const WsBoatVmsDesktopRpc = Rpc.make(WS_METHODS.boatVmsDesktop, {
+  payload: BoatVmDesktopInput,
+  success: BoatVmDesktop,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
 });
 
 // Every launch in progress, and ones that just ended, each time one changes stage.
@@ -2066,8 +2067,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatVmsBringHomeRpc,
   WsBoatVmsCatalogRpc,
   WsBoatVmsSaveSnapshotRpc,
-  WsBoatVmsSnapshotStatusRpc,
   WsBoatVmsCancelLaunchRpc,
+  WsBoatVmsDesktopRpc,
   WsSubscribeBoatVmLaunchesRpc,
   WsProjectCloneCancelRpc,
   WsProjectCloneRetryRpc,

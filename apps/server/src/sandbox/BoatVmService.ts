@@ -22,13 +22,14 @@ import {
   type BoatVmCancelLaunchResult,
   type BoatVmBroughtHome,
   type BoatVmCatalog,
+  type BoatVmDesktop,
+  type BoatVmDesktopInput,
   type BoatVmLaunchInput,
   type BoatVmLaunchListEvent,
   type BoatVmLaunchResult,
   type BoatVmListResult,
   type BoatVmSaveSnapshotInput,
   type BoatVmSnapshotState,
-  type BoatVmSnapshotStatusInput,
   type OrchestrationProjectShell,
   type SandboxJobSettings,
 } from "@t3tools/contracts";
@@ -245,6 +246,16 @@ fi
 printf '%s\\n%s\\n' "$DIR" "$STATE"
 `;
 
+// A launch with no repository gets the VM server's own scratch folder (its
+// base dir is ~/.t3), so the client opens it there as a "No project" thread.
+const SCRATCH_SCRIPT = `set -eu
+mkdir -p "$HOME/.t3/scratch"
+printf '%s\\n' "$HOME/.t3/scratch"
+`;
+
+/** The label and progress name of a VM launched without a repository. */
+const SCRATCH_VM_NAME = "scratch";
+
 const SYNC_WARNINGS: Readonly<Record<string, (name: string) => string>> = {
   dirty: (name) =>
     `${name} has uncommitted changes on the VM, so it was not updated. Commit or discard them there to pull.`,
@@ -272,7 +283,7 @@ export const busyPortArg = (port: number): string =>
   port.toString(16).toUpperCase().padStart(4, "0");
 
 // Each checkout under ~/work and its origin, one `<directory>\t<url>` line apiece.
-export const CHECKOUTS_SCRIPT = `for dir in "$HOME"/work/*/; do
+const CHECKOUTS_SCRIPT = `for dir in "$HOME"/work/*/; do
   dir="\${dir%/}"
   [ -d "$dir/.git" ] || continue
   url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
@@ -287,7 +298,7 @@ const NO_COMMITS_EXIT_CODE = 4;
 // Bundles every branch of ~/work/<directory>, and HEAD when it is detached.
 // Prints "<bundle path> <detached 0|1> <uncommitted 0|1>". Uncommitted changes
 // are left alone: the checkout is the VM's, and only commits travel.
-export const BUNDLE_SCRIPT = `set -eu
+const BUNDLE_SCRIPT = `set -eu
 cd "$HOME/work/$1"
 git rev-parse --verify --quiet HEAD >/dev/null || exit ${NO_COMMITS_EXIT_CODE}
 BUNDLE="$(mktemp "$HOME/.t3-bring-home.XXXXXXXX")"
@@ -314,11 +325,11 @@ const CHECKOUT_DIRECTORY = /^[A-Za-z0-9._-]+$/;
 const BUNDLE_ANSWER = /^(\/\S*\/\.t3-bring-home\.[A-Za-z0-9]+) ([01]) ([01])$/;
 
 /** Where a VM's branches land in a local repository. */
-export const boatVmRefPrefix = (sandboxId: string): string =>
+const boatVmRefPrefix = (sandboxId: string): string =>
   `refs/t3/boat/${sandboxId.replace(/[^A-Za-z0-9._-]/g, "-")}/`;
 
 /** This environment's checkout of the repository at `remoteUrl`, matched by repository identity. */
-export const localCheckoutOf = (
+const localCheckoutOf = (
   shells: ReadonlyArray<Pick<OrchestrationProjectShell, "workspaceRoot" | "repositoryIdentity">>,
   remoteUrl: string,
 ): string | undefined => {
@@ -449,7 +460,7 @@ export const withTailnet = (
 };
 
 /** Writes the agent keys where the next serve or sync step reads and deletes them. */
-export const writeLaunchEnv = (
+const writeLaunchEnv = (
   provider: SandboxProviderShape,
   ref: SandboxRef,
   env: Readonly<Record<string, string>>,
@@ -503,9 +514,8 @@ export class BoatVmService extends Context.Service<
     readonly saveSnapshot: (
       input: BoatVmSaveSnapshotInput,
     ) => Effect.Effect<BoatVmSnapshotState, BoatVmError>;
-    readonly snapshotStatus: (
-      input: BoatVmSnapshotStatusInput,
-    ) => Effect.Effect<BoatVmSnapshotState, BoatVmError>;
+    /** The VM's desktop stream URL, or `provisioning` until boat has it ready. */
+    readonly desktop: (input: BoatVmDesktopInput) => Effect.Effect<BoatVmDesktop, BoatVmError>;
   }
 >()("t3/sandbox/BoatVmService") {}
 
@@ -601,13 +611,18 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     input: BoatVmLaunchInput,
   ) {
     const attempt = yield* crypto.randomUUIDv4();
-    const label = `${BOAT_VM_LABEL_PREFIX}${input.repository.owner === undefined ? "" : `${input.repository.owner}/`}${input.repository.name}`;
+    const repository = input.repository;
+    const label = `${BOAT_VM_LABEL_PREFIX}${
+      repository === undefined
+        ? SCRATCH_VM_NAME
+        : `${repository.owner === undefined ? "" : `${repository.owner}/`}${repository.name}`
+    }`;
     const baseSnapshot = settings.boatVmBaseSnapshot.trim();
+    const repositorySnapshot =
+      repository === undefined ? undefined : boatVmSnapshotName(repository);
     const candidates = [
-      boatVmSnapshotName(input.repository),
-      ...(baseSnapshot === "" || baseSnapshot === boatVmSnapshotName(input.repository)
-        ? []
-        : [baseSnapshot]),
+      ...(repositorySnapshot === undefined ? [] : [repositorySnapshot]),
+      ...(baseSnapshot === "" || baseSnapshot === repositorySnapshot ? [] : [baseSnapshot]),
       // Only a tailnet join that the snapshot owns rules out a bare VM.
       ...(settings.boatVmConnectionMode === "tailscale" && settings.boatVmTailscale === "snapshot"
         ? []
@@ -648,8 +663,13 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         return result;
       }
     }
+    const wanted = [repositorySnapshot, baseSnapshot === "" ? undefined : baseSnapshot].filter(
+      (name) => name !== undefined,
+    );
     return yield* vmError(
-      `No Boat snapshot was found. Create ${boatVmSnapshotName(input.repository)}${baseSnapshot === "" ? "" : ` or ${baseSnapshot}`} with automatic Tailscale setup, or switch to a Tailscale auth key in Settings.`,
+      wanted.length === 0
+        ? "No Boat snapshot was found. Set a Base snapshot with automatic Tailscale setup, or switch to a Tailscale auth key in Settings."
+        : `No Boat snapshot was found. Create ${wanted.join(" or ")} with automatic Tailscale setup, or switch to a Tailscale auth key in Settings.`,
     );
   });
 
@@ -709,8 +729,12 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           ),
           env,
         );
+        const repository = input.repository;
         const syncRepository = Effect.fn("BoatVmService.syncRepository")(
           function* (ref: SandboxRef) {
+            if (repository === undefined) {
+              return yield* baseProvider.exec(ref, { script: SCRATCH_SCRIPT, timeoutMs: 20_000 });
+            }
             // Serve and repository sync run together and each consumes its own env file.
             yield* baseProvider.writeFile(
               ref,
@@ -720,10 +744,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             return yield* baseProvider
               .exec(ref, {
                 script: SYNC_SCRIPT,
-                args: [
-                  boatVmCloneUrl(input.repository.remoteUrl),
-                  directoryName(input.repository.name),
-                ],
+                args: [boatVmCloneUrl(repository.remoteUrl), directoryName(repository.name)],
                 timeoutMs: Number.POSITIVE_INFINITY,
               })
               .pipe(
@@ -743,7 +764,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           (effect, ref) =>
             effect.pipe(
               Effect.onExit((exit) =>
-                Exit.isSuccess(exit)
+                Exit.isSuccess(exit) || repository === undefined
                   ? Effect.void
                   : baseProvider
                       .exec(ref, {
@@ -827,7 +848,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
                   Effect.forkIn(launchScope),
                 )
             : undefined;
-        yield* report({ stage: "syncing" });
+        yield* report({ stage: repository === undefined ? "preparing" : "syncing" });
         const sync = yield* syncFiber === undefined
           ? syncRepository(bootstrap.ref)
           : Fiber.join(syncFiber);
@@ -839,7 +860,9 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             stderr: sync.stderr.slice(-500),
           });
           return yield* vmError(
-            `The VM could not clone or pull ${input.repository.name}. Add a GitHub token in Settings, Integrations, Sandbox jobs, for a private repository.`,
+            repository === undefined
+              ? "The VM could not prepare its scratch folder."
+              : `The VM could not clone or pull ${repository.name}. Add a GitHub token in Settings, Integrations, Sandbox jobs, for a private repository.`,
           );
         }
         if (sync.stderr.trim() !== "") {
@@ -848,7 +871,8 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             stderr: sync.stderr.slice(-500),
           });
         }
-        const warning = SYNC_WARNINGS[syncState]?.(input.repository.name);
+        const warning =
+          repository === undefined ? undefined : SYNC_WARNINGS[syncState]?.(repository.name);
         const proxyToken = useBoatProxy
           ? yield* boatProxy
               .register(bootstrap.ref.sandboxId, {
@@ -914,7 +938,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           .pipe(Effect.mapError(() => vmError("Could not start the boat VM launch."))));
       const began = yield* launchTracker.begin(
         launchId,
-        input.repository.name,
+        input.repository?.name ?? SCRATCH_VM_NAME,
         input.sandboxId === undefined
           ? { stage: "creating" }
           : { stage: "resuming", sandboxId: input.sandboxId },

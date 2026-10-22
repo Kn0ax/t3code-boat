@@ -33,6 +33,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  Monitor,
   Plus,
   TerminalSquare,
 } from "lucide-react";
@@ -137,6 +138,8 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** Set only when the thread runs on a boat VM whose desktop this client may open. */
+  onAddBoatDesktop?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -197,6 +200,20 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequests: "No linked pull requests available.",
   device: "Available from a thread.",
 } as const;
+
+const boatDesktopActions = (onClick: (() => void) | undefined) =>
+  onClick === undefined
+    ? []
+    : [
+        {
+          label: "Boat desktop",
+          icon: Monitor,
+          shortcut: "V",
+          available: true,
+          disabledReason: "Available in threads on a boat VM.",
+          onClick,
+        },
+      ];
 
 type TabContextMenuAction =
   | "rename"
@@ -317,6 +334,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  onAddBoatDesktop?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -385,6 +403,7 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
     },
+    ...boatDesktopActions(props.onAddBoatDesktop),
   ] as const;
 
   type SurfaceAction = (typeof actions)[number];
@@ -1086,6 +1105,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
     },
+    ...boatDesktopActions(props.onAddBoatDesktop),
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1459,6 +1479,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            onAddBoatDesktop={props.onAddBoatDesktop}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}

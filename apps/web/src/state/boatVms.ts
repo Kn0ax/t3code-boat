@@ -14,8 +14,10 @@ import {
   type BoatVm,
   type BoatVmBringHomeResult,
   type BoatVmRepository,
+  type RepositoryIdentity,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import { connectPairing } from "../connection/onboarding";
@@ -91,6 +93,33 @@ export function describeBroughtHome(result: BoatVmBringHomeResult): string {
     lines.push(`No local project for ${result.unmatched.join(", ")}.`);
   }
   return lines.join(" ");
+}
+
+/** The repository a boat VM checks out for a project; null without a remote T3 recognizes. */
+export const boatVmRepositoryOf = (
+  identity: RepositoryIdentity | null | undefined,
+): BoatVmRepository | null =>
+  identity
+    ? {
+        remoteUrl: identity.locator.remoteUrl,
+        ...(identity.owner === undefined ? {} : { owner: identity.owner }),
+        name:
+          identity.name ?? inferProjectTitleFromPath(identity.rootPath ?? identity.canonicalKey),
+      }
+    : null;
+
+/**
+ * What a draft starts a boat VM with: its project's repository, `"scratch"`
+ * for a "No project" draft, or null when it cannot start one (not a draft,
+ * or a project without a remote).
+ */
+export function boatVmDraftLaunch(input: {
+  readonly isDraft: boolean;
+  readonly project: { readonly repositoryIdentity?: RepositoryIdentity | null | undefined } | null;
+  readonly isScratch: boolean;
+}): BoatVmRepository | "scratch" | null {
+  if (!input.isDraft || input.project === null) return null;
+  return input.isScratch ? "scratch" : boatVmRepositoryOf(input.project.repositoryIdentity);
 }
 
 /** The VM a paired machine runs on: the one recorded at pairing, else the one its tailnet name names. */
@@ -183,7 +212,8 @@ const toError = (failure: unknown, fallback: string) =>
 /**
  * Starts (or resumes) a boat VM through `hostEnvironmentId`, pairs with it,
  * and returns the VM's project for the repository, creating it the first time,
- * with the launch's warning about the checkout, if any. Progress and failure
+ * with the launch's warning about the checkout, if any. Without a repository
+ * the project is the VM's Scratch project, as for a "No project" thread. Progress and failure
  * show in the banner of the composer `bannerKey` names; a failed or cancelled
  * launch resolves to null.
  */
@@ -191,14 +221,19 @@ export function useLaunchBoatVm() {
   const launch = useAtomCommand(boatVmEnvironment.launch, { reportFailure: false });
   const pair = useAtomCommand(connectPairing, { reportFailure: false });
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
 
   type LaunchInput = {
     readonly hostEnvironmentId: EnvironmentId;
     readonly sandboxId: string | null;
-    readonly repository: BoatVmRepository;
+    readonly repository: BoatVmRepository | null;
     readonly bannerKey: string;
   };
-  type Launched = { readonly projectRef: ScopedProjectRef; readonly warning: string | undefined };
+  type Launched = {
+    readonly project: EnvironmentProject;
+    readonly projectRef: ScopedProjectRef;
+    readonly warning: string | undefined;
+  };
 
   const run = async (input: LaunchInput, launchId: string): Promise<Launched> => {
     const launched = await launch({
@@ -206,7 +241,7 @@ export function useLaunchBoatVm() {
       input: {
         transport: boatVmInitialTransport(window.location.protocol, isElectron),
         ...(input.sandboxId === null ? {} : { sandboxId: input.sandboxId }),
-        repository: input.repository,
+        ...(input.repository === null ? {} : { repository: input.repository }),
         launchId,
       },
     });
@@ -248,12 +283,31 @@ export function useLaunchBoatVm() {
     });
     if (!connected) throw new Error(`${vm.label} did not connect.`);
 
+    if (input.repository === null) {
+      const scratch = await openScratch({ environmentId, input: {} });
+      if (scratch._tag === "Failure") {
+        throw toError(
+          squashAtomCommandFailure(scratch),
+          "Could not start without a project on the VM.",
+        );
+      }
+      return {
+        project: scratch.value,
+        projectRef: scopeProjectRef(environmentId, scratch.value.id),
+        warning: vm.warning,
+      };
+    }
+
     const existing = readProjects().find(
       (project) =>
         project.environmentId === environmentId && project.workspaceRoot === vm.workspaceRoot,
     );
     if (existing !== undefined) {
-      return { projectRef: scopeProjectRef(environmentId, existing.id), warning: vm.warning };
+      return {
+        project: existing,
+        projectRef: scopeProjectRef(environmentId, existing.id),
+        warning: vm.warning,
+      };
     }
 
     const projectId = newProjectId();
@@ -271,8 +325,8 @@ export function useLaunchBoatVm() {
       throw toError(squashAtomCommandFailure(created), "Could not open the repository on the VM.");
     }
     const projectRef = scopeProjectRef(environmentId, projectId);
-    await waitForProject(projectRef);
-    return { projectRef, warning: vm.warning };
+    const project = await waitForProject(projectRef);
+    return { project, projectRef, warning: vm.warning };
   };
 
   return async (input: LaunchInput): Promise<Launched | null> => {
@@ -280,7 +334,7 @@ export function useLaunchBoatVm() {
     startBoatVmLaunch(input.bannerKey, {
       launchId,
       hostEnvironmentId: input.hostEnvironmentId,
-      repositoryName: input.repository.name,
+      repositoryName: input.repository?.name ?? null,
       newVm: input.sandboxId === null,
       phase: "launching",
     });

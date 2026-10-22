@@ -181,7 +181,8 @@ const SCRIPT_RESTORE = `if [ "$T3_ALREADY" = false ]; then
     printf '%s\\n' "$T3_VERIFY" >&2
     t3_fail ${CODES.missingPrerequisites} "This repository lacks commits the bundle builds on; fetch them or send a full bundle."
   fi
-  t3_git fetch -q --no-tags "$T3_BUNDLE" "+$T3_WIP_REF:$T3_WIP_REF"
+  # Objects only: the ref marks a finished import, so it is written last.
+  t3_git fetch -q --no-tags "$T3_BUNDLE" "$T3_WIP_REF"
   T3_BASE="$(git rev-parse --verify "$T3_WIP^1")"
   if T3_EXISTING="$(git rev-parse -q --verify "refs/heads/$T3_BRANCH")"; then
     git merge-base --is-ancestor "$T3_EXISTING" "$T3_BASE" ||
@@ -193,6 +194,7 @@ const SCRIPT_RESTORE = `if [ "$T3_ALREADY" = false ]; then
   t3_git read-tree --reset -u "$T3_WIP^{tree}"
   t3_git read-tree "$T3_WIP^2^{tree}"
   git update-index -q --refresh >/dev/null 2>&1 || true
+  git update-ref "$T3_WIP_REF" "$T3_WIP"
 fi`;
 
 const SCRIPT_TRANSCRIPT_HELPERS = `if [ -z "\${HOME:-}" ]; then

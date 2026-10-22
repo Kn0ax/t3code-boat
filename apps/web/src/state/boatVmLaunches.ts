@@ -13,7 +13,8 @@ import { create } from "zustand";
 export interface BoatVmLaunchEntry {
   readonly launchId: string;
   readonly hostEnvironmentId: EnvironmentId;
-  readonly repositoryName: string;
+  /** Null for a "No project" launch. */
+  readonly repositoryName: string | null;
   readonly newVm: boolean;
   readonly phase: "launching" | "cancelling" | "connecting" | "failed";
   readonly error?: string;
@@ -66,13 +67,16 @@ export interface BoatVmLaunchBanner {
   readonly cancellable: boolean;
 }
 
+const forRepository = (entry: BoatVmLaunchEntry) =>
+  entry.repositoryName === null ? "" : ` for ${entry.repositoryName}`;
+
 export function boatVmLaunchBanner(
   entry: BoatVmLaunchEntry,
   launches: ReadonlyArray<BoatVmLaunchSnapshot>,
 ): BoatVmLaunchBanner {
   if (entry.phase === "failed") {
     return {
-      title: `Could not start the boat VM for ${entry.repositoryName}`,
+      title: `Could not start the boat VM${forRepository(entry)}`,
       description: entry.error ?? "An error occurred.",
       failed: true,
       cancellable: false,
@@ -80,7 +84,7 @@ export function boatVmLaunchBanner(
   }
   const snapshot = launches.find((launch) => launch.launchId === entry.launchId);
   return {
-    title: `${entry.newVm ? "Starting a new boat VM" : "Starting the boat VM"} for ${entry.repositoryName}`,
+    title: `${entry.newVm ? "Starting a new boat VM" : "Starting the boat VM"}${forRepository(entry)}`,
     description:
       entry.phase === "connecting"
         ? "Connecting to the VM"

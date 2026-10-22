@@ -286,6 +286,7 @@ import {
 import { cn, randomUUID } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { useOpenBoatDesktop } from "./chat/useOpenBoatDesktop";
 import { projectScriptIdFromCommand } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
@@ -367,6 +368,8 @@ import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/
 import { useEnvironmentQuery } from "../state/query";
 import {
   boatVmEnvironment,
+  boatVmDraftLaunch,
+  boatVmRepositoryOf,
   boatVmRunOnOptions,
   newBoatVmEntry,
   pairedBoatVm,
@@ -374,7 +377,6 @@ import {
 } from "../state/boatVms";
 import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
 import { useBoatVmLaunchBanner } from "./chat/useBoatVmLaunchBanner";
-import { inferProjectTitleFromPath } from "../lib/projectPaths";
 import { useEnvironmentScope } from "~/state/session";
 import {
   environmentServerConfigsAtom,
@@ -1669,6 +1671,7 @@ export default function ChatView(props: ChatViewProps) {
     return labels;
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
+  const openBoatDesktop = useOpenBoatDesktop(activeThreadRef);
   const terminalActions = useThreadTerminalActions(activeThreadRef);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
@@ -2145,17 +2148,20 @@ export default function ChatView(props: ChatViewProps) {
     activeProject,
     activeProjectIsScratch && draftId !== null,
   );
-  // A draft in a repository can also run on a boat VM, started by the machine
-  // holding the boat key.
-  const boatVmRepository =
-    draftId && !activeProjectIsScratch ? (activeProject?.repositoryIdentity ?? null) : null;
+  // A draft in a repository, or without a project, can also run on a boat VM,
+  // started by the machine holding the boat key.
+  const boatVmDraft = boatVmDraftLaunch({
+    isDraft: Boolean(draftId),
+    project: activeProject,
+    isScratch: activeProjectIsScratch,
+  });
   const boatVmManagingHostId = useBoatVmHostEnvironmentId();
-  const boatVmHostId = boatVmRepository === null ? null : boatVmManagingHostId;
+  const boatVmHostId = boatVmDraft === null ? null : boatVmManagingHostId;
   const boatVmManagingHostLabel =
     (boatVmManagingHostId === null
       ? undefined
       : environmentById.get(boatVmManagingHostId)?.label) ?? "the environment managing boat VMs";
-  const draftCanRunOnBoat = Boolean(draftId) && !activeProjectIsScratch && activeProject !== null;
+  const draftCanRunOnBoat = Boolean(draftId) && activeProject !== null;
   // An offline machine may be a stopped boat VM, which the thread can start again.
   const boatVms = useEnvironmentQuery(
     boatVmManagingHostId === null || (!draftCanRunOnBoat && !activeEnvironmentUnavailable)
@@ -2182,7 +2188,7 @@ export default function ChatView(props: ChatViewProps) {
       ? `Could not list boat VMs: ${boatVms.error}`
       : boatVms.data?.available === false
         ? `Add a boat key on ${boatVmManagingHostLabel} in Settings, Integrations, Sandbox jobs.`
-        : boatVmRepository === null
+        : boatVmDraft === null
           ? "This project has no Git remote T3 recognizes."
           : undefined;
   const runOnEnvironments =
@@ -2215,19 +2221,18 @@ export default function ChatView(props: ChatViewProps) {
   const boatVmLaunchBannerItem = useBoatVmLaunchBanner(boatVmLaunchKey);
   const [startingBoatVm, setStartingBoatVm] = useState(false);
   const startUnavailableBoatVm = () => {
-    const repository = activeProject?.repositoryIdentity;
-    if (unavailableBoatVm === undefined || !repository || boatVmManagingHostId === null) return;
-    const name =
-      repository.name ?? inferProjectTitleFromPath(repository.rootPath ?? repository.canonicalKey);
+    const repository = boatVmRepositoryOf(activeProject?.repositoryIdentity);
+    if (
+      unavailableBoatVm === undefined ||
+      (repository === null && !activeProjectIsScratch) ||
+      boatVmManagingHostId === null
+    )
+      return;
     setStartingBoatVm(true);
     void launchBoatVm({
       hostEnvironmentId: boatVmManagingHostId,
       sandboxId: unavailableBoatVm.sandboxId,
-      repository: {
-        remoteUrl: repository.locator.remoteUrl,
-        ...(repository.owner === undefined ? {} : { owner: repository.owner }),
-        name,
-      },
+      repository: activeProjectIsScratch ? null : repository,
       bannerKey: boatVmLaunchKey,
     })
       .then((launched) => {
@@ -2477,7 +2482,9 @@ export default function ChatView(props: ChatViewProps) {
               <Button
                 size="xs"
                 variant="ghost"
-                disabled={startingBoatVm || !activeProject?.repositoryIdentity}
+                disabled={
+                  startingBoatVm || (!activeProject?.repositoryIdentity && !activeProjectIsScratch)
+                }
                 onClick={startUnavailableBoatVm}
               >
                 Start VM
@@ -3506,24 +3513,17 @@ export default function ChatView(props: ChatViewProps) {
       setBusyEnvironmentChange((busy) => (busy === request ? null : busy));
     };
     if (target.boatVm !== undefined) {
-      if (boatVmHostId === null || boatVmRepository === null) return;
-      const name =
-        boatVmRepository.name ??
-        inferProjectTitleFromPath(boatVmRepository.rootPath ?? boatVmRepository.canonicalKey);
+      if (boatVmHostId === null || boatVmDraft === null) return;
       setBusyEnvironmentChange(request);
       void launchBoatVm({
         hostEnvironmentId: boatVmHostId,
         sandboxId: target.boatVm.sandboxId,
-        repository: {
-          remoteUrl: boatVmRepository.locator.remoteUrl,
-          ...(boatVmRepository.owner === undefined ? {} : { owner: boatVmRepository.owner }),
-          name,
-        },
+        repository: boatVmDraft === "scratch" ? null : boatVmDraft,
         bannerKey: boatVmLaunchKey,
       })
         .then((launched) => {
           if (launched === null) return;
-          const { projectRef, warning } = launched;
+          const { project, projectRef, warning } = launched;
           if (warning !== undefined) {
             toastManager.add({
               type: "warning",
@@ -3542,6 +3542,17 @@ export default function ChatView(props: ChatViewProps) {
             currentDraft.projectId !== originalDraft.projectId
           )
             return;
+          // A "No project" draft moves to the VM's Scratch project the way it
+          // moves to any other machine's.
+          if (boatVmDraft === "scratch") {
+            setLogicalProjectDraftThreadId(
+              deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+              projectRef,
+              draftId,
+              { environmentSelection: "manual", loadBalancedEnvironmentId: null },
+            );
+            return;
+          }
           setDraftThreadContext(draftId, {
             projectRef,
             environmentSelection: "manual",
@@ -8995,6 +9006,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
+          onAddBoatDesktop={openBoatDesktop}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -9050,6 +9062,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurfaceStable}
             onAddPullRequests={addPullRequestsSurfaceStable}
             onAddDevice={addDeviceSurfaceStable}
+            onAddBoatDesktop={openBoatDesktop}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}
             diffAvailable={isServerThread && isGitRepo}

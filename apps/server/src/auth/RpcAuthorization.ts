@@ -85,7 +85,6 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
   [WS_METHODS.boatVmsList]: AuthOrchestrationReadScope,
   [WS_METHODS.boatVmsCatalog]: AuthOrchestrationReadScope,
-  [WS_METHODS.boatVmsSnapshotStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeBoatVmLaunches]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,

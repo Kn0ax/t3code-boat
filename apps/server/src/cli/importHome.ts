@@ -75,7 +75,7 @@ const isIdentitySecret = (name: string) =>
   ].includes(name);
 
 /** The secret store names a settings file refers to. */
-export const settingsSecretNames = (settingsJson: string): Option.Option<ReadonlyArray<string>> => {
+const settingsSecretNames = (settingsJson: string): Option.Option<ReadonlyArray<string>> => {
   const decoded = decodeServerSettingsJsonExit(settingsJson);
   if (Exit.isFailure(decoded)) return Option.none();
   const names = new Set<string>();
@@ -91,7 +91,7 @@ const canonical = Effect.fn("importHome.canonical")(function* (directory: string
   return yield* fs.realPath(directory).pipe(Effect.orElseSucceed(() => directory));
 });
 
-export const importHome = Effect.fn("importHome")(function* (input: {
+const importHome = Effect.fn("importHome")(function* (input: {
   readonly from: string;
   readonly baseDir: string;
   readonly parts: ReadonlyArray<ImportHomePart>;

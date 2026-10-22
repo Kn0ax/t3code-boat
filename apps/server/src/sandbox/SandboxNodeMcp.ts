@@ -106,7 +106,7 @@ const payloadOf = (envelope: McpToolEnvelope): unknown => {
   }
 };
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
 
   const withHeaders = (endpoint: SandboxNodeEndpoint) =>

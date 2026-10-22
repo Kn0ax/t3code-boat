@@ -46,8 +46,7 @@ export type ArchiverState = typeof ArchiverState.Type;
 
 export const emptyState: ArchiverState = { threadsByVm: {}, copied: [] };
 
-export const originKeyOf = (sandboxId: string, threadId: string) =>
-  `boat-vm:${sandboxId}:${threadId}`;
+const originKeyOf = (sandboxId: string, threadId: string) => `boat-vm:${sandboxId}:${threadId}`;
 
 export class ArchiverError extends Schema.TaggedError<ArchiverError>()("ArchiverError", {
   message: Schema.String,
@@ -133,7 +132,8 @@ export const runPass = Effect.fn("boatArchiver.runPass")(function* (input: {
 
     // Threads that left the active list: archived (kept, with their snapshot) or deleted.
     const archived: Array<{ readonly thread: VmThread; readonly snapshot: string }> = [];
-    let unresolved = false;
+    // Kept tracked so a later pass retries them instead of deleting the VM without them.
+    const unresolved: Array<string> = [];
     for (const threadId of known.filter((id) => !activeIds.has(id))) {
       const read = yield* Effect.result(
         readSnapshot(ref, threadId).pipe(
@@ -150,7 +150,7 @@ export const runPass = Effect.fn("boatArchiver.runPass")(function* (input: {
       );
       if (read._tag === "Failure") {
         problems.push(read.failure.message);
-        unresolved = true;
+        unresolved.push(threadId);
         continue;
       }
       const found = read.success;
@@ -208,10 +208,10 @@ export const runPass = Effect.fn("boatArchiver.runPass")(function* (input: {
       }
     }
 
-    threadsByVm[ref.sandboxId] = threads.map((thread) => thread.id);
+    threadsByVm[ref.sandboxId] = [...threads.map((thread) => thread.id), ...unresolved];
     let action: VmReport["action"] = decision.action;
     if (decision.action === "delete") {
-      if (problems.length > 0 || unresolved) {
+      if (problems.length > 0 || unresolved.length > 0) {
         action = "kept";
       } else {
         const destroyed = yield* Effect.result(provider.destroy(ref));

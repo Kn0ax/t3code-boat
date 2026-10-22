@@ -54,6 +54,16 @@ describe("boatVmLaunchBanner", () => {
     const banner = boatVmLaunchBanner(entry({ phase: "failed", error: "No Boat snapshot." }), []);
     expect(banner).toMatchObject({ failed: true, description: "No Boat snapshot." });
   });
+
+  it("names no repository for a launch without a project", () => {
+    const banner = boatVmLaunchBanner(entry({ repositoryName: null }), [
+      snapshot({ stage: "preparing" }),
+    ]);
+    expect(banner).toMatchObject({
+      title: "Starting a new boat VM",
+      description: "Preparing workspace",
+    });
+  });
 });
 
 describe("updateBoatVmLaunch", () => {

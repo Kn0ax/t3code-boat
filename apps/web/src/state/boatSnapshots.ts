@@ -25,10 +25,6 @@ export const boatSnapshotEnvironment = {
       key: ({ environmentId, input }) => `${environmentId}:${input.name}`,
     },
   }),
-  snapshotStatus: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
-    label: "environment-data:boat-vms:snapshot-status",
-    tag: WS_METHODS.boatVmsSnapshotStatus,
-  }),
 };
 
 export type BoatCatalogView =
@@ -113,21 +109,24 @@ const POLL_INTERVAL_MS = 10_000;
 // A running VM takes a fresh capture before boat freezes it, which can run many minutes.
 const POLL_TIMEOUT_MS = 20 * 60_000;
 
-/** Waits on a save started through `environmentId`, then reloads its catalog. */
-export async function watchBoatSnapshotSave(input: {
+/** Waits on a save started through `environmentId`, reading its status from the catalog. */
+export function watchBoatSnapshotSave(input: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly signal?: AbortSignal;
 }): Promise<BoatSnapshotOutcome> {
-  const target = { environmentId: input.environmentId, input: { name: input.name } };
-  const outcome = await waitForBoatSnapshot({
+  return waitForBoatSnapshot({
     readStatus: async () => {
       const result = await executeAtomQuery(
         appAtomRegistry,
-        boatSnapshotEnvironment.snapshotStatus(target),
+        boatSnapshotEnvironment.catalog({ environmentId: input.environmentId, input: {} }),
         { refresh: true, reportFailure: false, reportDefect: false },
       );
-      return result._tag === "Success" ? result.value.status : null;
+      if (result._tag !== "Success") return null;
+      // boat may not list a save it only just started; that still counts as saving.
+      return (
+        result.value.snapshots.find((snapshot) => snapshot.name === input.name)?.status ?? null
+      );
     },
     wait: (ms) =>
       new Promise((resolve) => {
@@ -146,8 +145,4 @@ export async function watchBoatSnapshotSave(input: {
     timeoutMs: POLL_TIMEOUT_MS,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
-  appAtomRegistry.refresh(
-    boatSnapshotEnvironment.catalog({ environmentId: input.environmentId, input: {} }),
-  );
-  return outcome;
 }

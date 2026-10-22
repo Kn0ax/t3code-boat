@@ -67,13 +67,17 @@ export const BoatVmLaunchInput = Schema.Struct({
   transport: Schema.optionalKey(Schema.Literals(["http", "https"])),
   /** An existing VM to start; omitted creates a new one. */
   sandboxId: Schema.optionalKey(TrimmedNonEmptyString),
-  repository: BoatVmRepository,
+  /** Omitted for a "No project" thread: the VM gets an empty scratch folder instead of a checkout. */
+  repository: Schema.optionalKey(BoatVmRepository),
   /** Names the launch on the progress stream, so a client can match it before the call returns. */
   launchId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
 });
 export type BoatVmLaunchInput = typeof BoatVmLaunchInput.Type;
 
-/** In the order a launch reaches them; `tailscale` only when the VM joins the tailnet. */
+/**
+ * In the order a launch reaches them; `tailscale` only when the VM joins the
+ * tailnet, and `preparing` in place of `syncing` for a launch with no repository.
+ */
 export const BoatVmLaunchStage = Schema.Literals([
   "creating",
   "resuming",
@@ -81,6 +85,7 @@ export const BoatVmLaunchStage = Schema.Literals([
   "starting",
   "tailscale",
   "syncing",
+  "preparing",
 ]);
 export type BoatVmLaunchStage = typeof BoatVmLaunchStage.Type;
 
@@ -131,6 +136,8 @@ export function boatVmLaunchProgressSummary(
       return "Joining Tailscale";
     case "syncing":
       return "Cloning or pulling the repository";
+    case "preparing":
+      return "Preparing workspace";
   }
 }
 
@@ -149,7 +156,10 @@ export const BoatVmLaunchResult = Schema.Struct({
       tailnetHttpBaseUrl: Schema.optionalKey(TrimmedNonEmptyString),
     }),
   ),
-  /** The repository's checkout on the VM, freshly pulled unless `warning` says why not. */
+  /**
+   * The repository's checkout on the VM, freshly pulled unless `warning` says why not;
+   * without a repository, the VM server's scratch folder.
+   */
   workspaceRoot: TrimmedNonEmptyString,
   /** Why the checkout was left as it was, for the user. */
   warning: Schema.optionalKey(TrimmedNonEmptyString),
@@ -241,17 +251,30 @@ export const BoatVmSaveSnapshotInput = Schema.Struct({
 });
 export type BoatVmSaveSnapshotInput = typeof BoatVmSaveSnapshotInput.Type;
 
-export const BoatVmSnapshotStatusInput = Schema.Struct({
-  name: BoatSnapshotName,
-});
-export type BoatVmSnapshotStatusInput = typeof BoatVmSnapshotStatusInput.Type;
-
 export const BoatVmSnapshotState = Schema.Struct({
   name: TrimmedNonEmptyString,
   /** saving, ready or failed. */
   status: TrimmedNonEmptyString,
 });
 export type BoatVmSnapshotState = typeof BoatVmSnapshotState.Type;
+
+export const BoatVmDesktopInput = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString,
+});
+export type BoatVmDesktopInput = typeof BoatVmDesktopInput.Type;
+
+/** `provisioning` means boat is still preparing the desktop; ask again. */
+export const BoatVmDesktop = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    /** boat's desktop stream URL. Secret: it carries an access token. */
+    url: TrimmedNonEmptyString,
+    /** boat's name for the desktop mode, as boat sent it. */
+    mode: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({ status: Schema.Literal("provisioning") }),
+]);
+export type BoatVmDesktop = typeof BoatVmDesktop.Type;
 
 export class BoatVmError extends Schema.TaggedError<BoatVmError>()("BoatVmError", {
   message: Schema.String,

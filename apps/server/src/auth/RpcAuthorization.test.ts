@@ -41,7 +41,6 @@ describe("RPC authorization scopes", () => {
     for (const method of [
       WS_METHODS.boatVmsList,
       WS_METHODS.boatVmsCatalog,
-      WS_METHODS.boatVmsSnapshotStatus,
       WS_METHODS.subscribeBoatVmLaunches,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
@@ -51,6 +50,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.boatVmsBringHome,
       WS_METHODS.boatVmsSaveSnapshot,
       WS_METHODS.boatVmsCancelLaunch,
+      WS_METHODS.boatVmsDesktop,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

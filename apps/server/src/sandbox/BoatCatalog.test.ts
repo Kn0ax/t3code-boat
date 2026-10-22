@@ -3,10 +3,15 @@ import { BoatVmError, type SandboxJobSettings } from "@t3tools/contracts";
 import { BoatCatalogError, type BoatCatalogShape } from "@t3tools/sandbox-boat";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
+import * as Tracer from "effect/Tracer";
 
 import * as BoatCatalog from "./BoatCatalog.ts";
 
 const settings = (boat: string) => ({ providerKeys: { boat } }) as unknown as SandboxJobSettings;
+
+const DESKTOP_URL = "https://desktop.example/bx_1?token=desktop_secret";
 
 interface Calls {
   readonly saved: Array<{ readonly sandboxId: string; readonly name: string }>;
@@ -37,6 +42,7 @@ const makeCatalog = (calls: Calls, overrides: Partial<BoatCatalogShape> = {}): B
         calls.polled.push(name);
         return { name, status: "ready" };
       }),
+    desktop: () => Effect.succeed({ status: "ready", url: DESKTOP_URL }),
     ...overrides,
   };
 };
@@ -86,16 +92,13 @@ describe("boat VM catalog", () => {
     }),
   );
 
-  it.effect("starts a save and reports its status by name", () =>
+  it.effect("starts a save under the given name", () =>
     Effect.gen(function* () {
       const calls: Calls = { saved: [], polled: [] };
       const ops = operations("boat-key", makeCatalog(calls));
       const started = yield* ops.saveSnapshot({ sandboxId: "bx_1", name: "t3-acme-app" });
-      const polled = yield* ops.snapshotStatus({ name: "t3-acme-app" });
       assert.deepStrictEqual(started, { name: "t3-acme-app", status: "saving" });
-      assert.deepStrictEqual(polled, { name: "t3-acme-app", status: "ready" });
       assert.deepStrictEqual(calls.saved, [{ sandboxId: "bx_1", name: "t3-acme-app" }]);
-      assert.deepStrictEqual(calls.polled, ["t3-acme-app"]);
     }),
   );
 
@@ -112,6 +115,63 @@ describe("boat VM catalog", () => {
       );
       const error = yield* Effect.flip(ops.catalog);
       assert.equal(error.message, "boat could not list the environments (unauthorized).");
+    }),
+  );
+
+  it.effect("hands out the desktop URL without logging it or putting it on a span", () =>
+    Effect.gen(function* () {
+      const calls: Calls = { saved: [], polled: [] };
+      const logs: Array<unknown> = [];
+      const spans: Array<Tracer.NativeSpan> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const logger = Logger.make(({ fiber, message }) => {
+        logs.push({ message, annotations: fiber.getRef(References.CurrentLogAnnotations) });
+      });
+      const run = (catalog: BoatCatalogShape) =>
+        operations("boat-key", catalog)
+          .desktop({ sandboxId: "bx_1" })
+          .pipe(
+            Effect.withTracer(tracer),
+            Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+            Effect.provideService(References.MinimumLogLevel, "Debug"),
+          );
+
+      assert.deepStrictEqual(yield* run(makeCatalog(calls)), {
+        status: "ready",
+        url: DESKTOP_URL,
+      });
+      const failed = yield* Effect.flip(
+        run(
+          makeCatalog(calls, {
+            desktop: () =>
+              Effect.fail(new BoatCatalogError({ operation: "desktop", failure: "not-found" })),
+          }),
+        ),
+      );
+      assert.equal(failed.message, "boat could not open the desktop (not-found).");
+      assert.isAbove(spans.length, 0);
+      assert.isAbove(logs.length, 0);
+      const recorded = JSON.stringify([
+        logs,
+        spans.map((span) => [span.name, [...span.attributes], span.events]),
+      ]);
+      assert.notInclude(recorded, "desktop_secret");
+    }),
+  );
+
+  it.effect("refuses a desktop without a boat key", () =>
+    Effect.gen(function* () {
+      const calls: Calls = { saved: [], polled: [] };
+      const error = yield* Effect.flip(
+        operations("", makeCatalog(calls)).desktop({ sandboxId: "bx_1" }),
+      );
+      assert.include(error.message, "boat key");
     }),
   );
 });

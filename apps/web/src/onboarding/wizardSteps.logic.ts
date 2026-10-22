@@ -16,13 +16,14 @@ export function resolveOnboardingSteps(input: {
   readonly boatSupported: boolean;
 }): readonly OnboardingStep[] {
   const imported = input.dataImport?.imported === true;
+  const importedProjects = imported && input.dataImport?.importedProjects !== false;
   return [
     ...(input.dataImport?.available === true && !imported ? (["copy-data"] as const) : []),
     "connection",
     "agents",
     ...(input.boatSupported ? (["boat"] as const) : []),
     // Copied projects are already there; scanning for more would duplicate them.
-    ...(imported ? [] : (["import"] as const)),
+    ...(importedProjects ? [] : (["import"] as const)),
   ];
 }
 

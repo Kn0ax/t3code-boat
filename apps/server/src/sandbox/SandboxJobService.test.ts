@@ -162,6 +162,8 @@ interface FakeNode {
   /** Completed once a watcher is waiting on a held run. */
   waiting: Deferred.Deferred<void> | undefined;
   failTool: string | undefined;
+  /** An interrupt is only acknowledged; the held run writes once more and ends on the next wait. */
+  slowInterrupt: boolean;
   /** How each run ends; a failed run leaves an error item and no answer. */
   runStatus: "completed" | "failed";
   launches: Array<Readonly<Record<string, unknown>>>;
@@ -170,6 +172,7 @@ interface FakeNode {
 const makeNodeMcp = (node: FakeNode) => {
   let workspaceRoot = "";
   let runs = 0;
+  let interruptRequested = false;
   const startRun = (threadId: string) => {
     runs += 1;
     NodeFS.writeFileSync(NodePath.join(workspaceRoot, `run-${runs}.md`), `run ${runs}\n`);
@@ -200,6 +203,10 @@ const makeNodeMcp = (node: FakeNode) => {
             delivery: "started",
           };
         case "t3_thread_wait":
+          if (node.hold !== undefined && interruptRequested) {
+            NodeFS.writeFileSync(NodePath.join(workspaceRoot, "late.md"), "late\n");
+            yield* Deferred.succeed(node.hold, undefined);
+          }
           if (node.hold !== undefined) {
             if (node.waiting !== undefined) yield* Deferred.succeed(node.waiting, undefined);
             yield* Deferred.await(node.hold);
@@ -211,7 +218,8 @@ const makeNodeMcp = (node: FakeNode) => {
             timedOut: false,
           };
         case "t3_thread_interrupt":
-          if (node.hold !== undefined) yield* Deferred.succeed(node.hold, undefined);
+          if (node.slowInterrupt) interruptRequested = true;
+          else if (node.hold !== undefined) yield* Deferred.succeed(node.hold, undefined);
           return { threadId: args.threadId, runId: `run-${runs}`, status: "interrupt_requested" };
         case "t3_thread_read":
           return {
@@ -271,6 +279,8 @@ interface Harness {
   readonly parentMessages: Array<string>;
   readonly extensions: Array<number>;
   readonly failures: { readFile: boolean };
+  /** Runs after the next job read, before its caller sees the result. */
+  afterGet: Effect.Effect<void> | undefined;
 }
 
 const makeHarness = (
@@ -285,12 +295,14 @@ const makeHarness = (
       hold: undefined,
       waiting: undefined,
       failTool: undefined,
+      slowInterrupt: false,
       runStatus: "completed",
       launches: [],
     },
     parentMessages: [],
     extensions: [],
     failures: { readFile: false },
+    afterGet: undefined,
   };
   const provider = makeLocalNodeProvider(harness.extensions, harness.failures);
   const layer = Layer.effect(
@@ -303,7 +315,23 @@ const makeHarness = (
   ).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
-        SandboxJobStore.layer,
+        Layer.effect(
+          SandboxJobStore.SandboxJobStore,
+          Effect.gen(function* () {
+            const store = yield* SandboxJobStore.SandboxJobStore;
+            return SandboxJobStore.SandboxJobStore.of({
+              ...store,
+              get: (jobId) =>
+                store.get(jobId).pipe(
+                  Effect.tap(() => {
+                    const afterGet = harness.afterGet;
+                    harness.afterGet = undefined;
+                    return afterGet ?? Effect.void;
+                  }),
+                ),
+            });
+          }),
+        ).pipe(Layer.provide(SandboxJobStore.layer)),
         Layer.succeed(SandboxNodeMcp.SandboxNodeMcp, makeNodeMcp(harness.node)),
         Layer.succeed(SandboxEnvironmentManager, makeManager(harness.manager)),
       ),
@@ -434,6 +462,43 @@ describe("SandboxJobService", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("lets an expired job's interrupted run end before collecting it", () => {
+    const { harness, layer } = makeHarness({ maxLifetimeHours: 1 });
+    return Effect.gen(function* () {
+      harness.node.hold = yield* Deferred.make<void>();
+      harness.node.waiting = yield* Deferred.make<void>();
+      harness.node.slowInterrupt = true;
+      const jobs = yield* SandboxJobService.SandboxJobService;
+      const started = yield* jobs.start({ ...startInput, wait: false }, caller());
+      yield* Deferred.await(harness.node.waiting);
+
+      yield* TestClock.adjust("2 hours");
+      yield* jobs.runMaintenance;
+      const completed = (yield* jobs.status({ jobId: started.job.jobId })).job;
+      assert.equal(completed.state, "completed");
+      assert.equal(git(repository, ["show", `${completed.resultRef}:late.md`]), "late\n");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps an expired job's node when its run cannot be interrupted", () => {
+    const { harness, layer } = makeHarness({ maxLifetimeHours: 1 });
+    return Effect.gen(function* () {
+      harness.node.hold = yield* Deferred.make<void>();
+      harness.node.waiting = yield* Deferred.make<void>();
+      const jobs = yield* SandboxJobService.SandboxJobService;
+      const started = yield* jobs.start({ ...startInput, wait: false }, caller());
+      yield* Deferred.await(harness.node.waiting);
+
+      harness.node.failTool = "t3_thread_interrupt";
+      yield* TestClock.adjust("2 hours");
+      yield* jobs.runMaintenance;
+      const retained = (yield* jobs.status({ jobId: started.job.jobId })).job;
+      assert.equal(retained.state, "stopped");
+      assert.include(retained.error, "t3_thread_interrupt");
+      assert.notInclude(harness.manager.calls, "destroy");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("holds one node across runs until the job is completed", () => {
     const { harness, layer } = makeHarness();
     return Effect.gen(function* () {
@@ -545,6 +610,45 @@ describe("SandboxJobService", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.live("sees a run settle that ends right after the wait read the job", () => {
+    const { harness, layer } = makeHarness();
+    return Effect.gen(function* () {
+      const hold = yield* Deferred.make<void>();
+      harness.node.hold = hold;
+      harness.node.waiting = yield* Deferred.make<void>();
+      const jobs = yield* SandboxJobService.SandboxJobService;
+      const started = yield* jobs.start({ ...startInput, wait: false }, caller());
+      yield* Deferred.await(harness.node.waiting);
+
+      const jobId = started.job.jobId;
+      harness.afterGet = Deferred.succeed(hold, undefined).pipe(
+        Effect.andThen(jobs.status({ jobId, wait: true, timeoutMs: 1_000 })),
+        Effect.asVoid,
+        Effect.orDie,
+      );
+      const settled = yield* jobs.status({ jobId, wait: true, timeoutMs: 1_000 });
+      assert.isFalse(settled.waitTimedOut);
+      assert.equal(settled.job.state, "idle");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("holds concurrent starts to the job limit", () => {
+    const { layer } = makeHarness({ maxActiveJobs: 1 });
+    return Effect.gen(function* () {
+      const jobs = yield* SandboxJobService.SandboxJobService;
+      const results = yield* Effect.all(
+        [1, 2].map(() => jobs.start({ ...startInput, wait: false }, caller()).pipe(Effect.result)),
+        { concurrency: "unbounded" },
+      );
+      const refused = results.filter((result) => result._tag === "Failure");
+      assert.deepEqual(
+        refused.map((result) => result.failure.code),
+        ["sandbox_limit_reached"],
+      );
+      assert.equal((yield* jobs.list({ includeFinished: false })).length, 1);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("discards a job by destroying its node without collecting", () => {
     const { harness, layer } = makeHarness();

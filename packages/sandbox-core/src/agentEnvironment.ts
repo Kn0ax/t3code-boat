@@ -17,7 +17,7 @@ export const SANDBOX_ENV = {
  * The proxy's root URL. Claude Code appends `/v1/messages` and the Codex
  * entry adds `/v1`, so a pasted `.../v1` is taken back to the root.
  */
-export const normalizeModelProxyBaseUrl = (baseUrl: string): string =>
+const normalizeModelProxyBaseUrl = (baseUrl: string): string =>
   baseUrl.trim().replace(/\/+$/u, "").replace(/\/v1$/u, "").replace(/\/+$/u, "");
 
 /** Whether nodes and VMs send their agents through the model proxy. */
