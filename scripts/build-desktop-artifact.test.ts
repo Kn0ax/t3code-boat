@@ -67,7 +67,6 @@ import {
   resolveResourceMonitorRustTargets,
   resolveWindowsServerAsarIgnoreGlobs,
   resourceMonitorExecutableName,
-  resolveGitHubPublishConfig,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
   resolvePackageManagerUserAgent,
@@ -545,9 +544,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  it("keeps the fork product name on every channel", () => {
+    assert.equal(resolveDesktopProductName(), "T3 Code (Boat)");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -569,58 +567,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
 
-  it.effect("resolves GitHub desktop publish config from Effect config", () =>
+  it.effect("never writes a GitHub update feed, even on CI", () =>
     Effect.gen(function* () {
-      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
-          ),
-        ),
-      );
-      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                GITHUB_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
-          ),
-        ),
-      );
-
-      assert.deepStrictEqual(latestConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "release",
-      });
-      assert.deepStrictEqual(nightlyConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
-    }),
-  );
-
-  it.effect("omits update feeds for pull request preview builds", () =>
-    Effect.gen(function* () {
-      const preview = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.0.33-pr.8182.1",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
       const release = yield* createBuildConfig(
         "mac",
         "dmg",
@@ -630,31 +578,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
         undefined,
       );
+      const mock = yield* createBuildConfig("mac", "dmg", "0.0.33", false, true, 4141, undefined);
 
-      const previewChannel = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.0.41-preview.20260912.1589",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-
-      assert.isNull(preview.publish);
-      assert.isNull(previewChannel.publish);
-      assert.deepStrictEqual(release.publish, [
-        {
-          provider: "github",
-          owner: "pingdotgg",
-          repo: "t3code",
-          releaseType: "release",
-        },
-      ]);
+      assert.isNull(release.publish);
+      assert.deepStrictEqual(mock.publish, [{ provider: "generic", url: "http://localhost:4141" }]);
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+          ConfigProvider.fromEnv({
+            env: { GITHUB_REPOSITORY: "pingdotgg/t3code", T3CODE_DESKTOP_UPDATE_REPOSITORY: "x/y" },
+          }),
         ),
       ),
     ),
@@ -979,7 +912,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "**/*.map",
       ]);
       assert.deepStrictEqual(mac.dmg, {
-        title: "T3 Code (Beta) 1.2.3 Installer",
+        title: "T3 Code (Boat) 1.2.3 Installer",
         background: "dmg/dmg-background-latest.png",
         window: { width: 640, height: 432 },
         contents: [
@@ -991,10 +924,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       });
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).target, ["AppImage", "deb"]);
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "T3 Code", schemes: ["t3code-boat"] },
       ]);
       assert.deepStrictEqual((mac.mac as Record<string, unknown>).protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "T3 Code", schemes: ["t3code-boat"] },
         { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
       ]);
       const macInfo = (mac.mac as { extendInfo: Record<string, unknown> }).extendInfo;
@@ -2223,7 +2156,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.t3tools.t3code.boat",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -2246,7 +2179,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code.boat</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
@@ -2404,7 +2337,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.notInclude(error.message, secret);
   });
 
-  it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
+  it.effect("adds passkey entitlements and the renderer protocol to signed macOS builds", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, false, undefined, {
         entitlementsPath: "/tmp/entitlements.mac.plist",
@@ -2412,12 +2345,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       });
 
       const mac = config.mac as Record<string, unknown>;
-      assert.equal(config.appId, "com.t3tools.t3code");
+      assert.equal(config.appId, "com.t3tools.t3code.boat");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
       assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
       assert.deepStrictEqual(mac.protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "T3 Code", schemes: ["t3code-boat"] },
         { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
       ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),

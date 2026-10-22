@@ -26,11 +26,11 @@ const verifyWindowsDesktopArtifactCli = Command.make("verify-windows-desktop-art
   verbose: Flag.Boolean("verbose").pipe(Flag.withDefault(false)),
 }).pipe(
   Command.withDescription("Verify a Windows desktop artifact's packaged natives load."),
-  Command.withHandler(({ appDir, arch, buildVersion, verbose }) =>
+  Command.withHandler(({ appDir, arch, verbose }) =>
     Effect.gen(function* () {
       yield* verifyWindowsPackagedRuntime({
         packagedAppDir: appDir,
-        appExecutableName: `${resolveDesktopProductName(buildVersion)}.exe`,
+        appExecutableName: `${resolveDesktopProductName()}.exe`,
         targetArch: arch,
         verbose,
       });

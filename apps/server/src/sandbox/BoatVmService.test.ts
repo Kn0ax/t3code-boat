@@ -7,7 +7,12 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
-import type { OrchestrationProjectShell, SandboxJobSettings } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ThreadId,
+  type OrchestrationProjectShell,
+  type SandboxJobSettings,
+} from "@t3tools/contracts";
 import {
   SandboxEnvironmentError,
   SandboxEnvironmentManager,
@@ -18,15 +23,23 @@ import {
 } from "@t3tools/sandbox-core";
 import { makeFakeSandboxProvider } from "@t3tools/sandbox-core/testing";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
+import * as ServerConfig from "../config.ts";
+import { EventSinkWriteError } from "../orchestration-v2/EventSink.ts";
+import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as BoatVmLifecycle from "./BoatVmLifecycle.ts";
 import * as BoatVmService from "./BoatVmService.ts";
 import * as BoatVmProxy from "./BoatVmProxy.ts";
 
@@ -81,6 +94,9 @@ interface Record {
   readonly resets: Array<string>;
   readonly tailnetJoins: Array<{ readonly sandboxId: string; readonly script: string }>;
   readonly destroyed: Array<string>;
+  readonly stopped: Array<string>;
+  /** Thread mirrors, copy deletes, and VM stops and deletes, in the order they happened. */
+  readonly events: Array<string>;
   readonly written: Array<{ readonly path: string; readonly content: string }>;
   /** The hex port each VM's busy check looks at; the host's own T3 may hold 3773. */
   readonly busyPorts: Map<string, string>;
@@ -179,8 +195,16 @@ const makeManager = (record: Record, snapshots: ReadonlySet<string>) =>
         record.reconnects.push(input.ref.sandboxId);
         return bootstrapFor(input.ref, "pair-again");
       }),
-    stop: () => Effect.void,
-    destroy: () => Effect.void,
+    stop: (input) =>
+      Effect.sync(() => {
+        record.stopped.push(input.ref.sandboxId);
+        record.events.push(`stop:${input.ref.sandboxId}`);
+      }),
+    destroy: (input) =>
+      Effect.sync(() => {
+        record.destroyed.push(input.ref.sandboxId);
+        record.events.push(`destroy:${input.ref.sandboxId}`);
+      }),
   });
 
 const makeHarness = (input: {
@@ -192,8 +216,14 @@ const makeHarness = (input: {
     manager: SandboxEnvironmentManager["Service"],
   ) => SandboxEnvironmentManager["Service"];
   readonly projects?: ReadonlyArray<
-    Pick<OrchestrationProjectShell, "workspaceRoot" | "repositoryIdentity">
+    Pick<OrchestrationProjectShell, "workspaceRoot" | "repositoryIdentity"> & {
+      readonly id?: ProjectId;
+    }
   >;
+  readonly mirrorThread?: ThreadImportService.ThreadImportService["Service"]["mirrorThread"];
+  readonly deleteCopy?: ThreadImportService.ThreadImportService["Service"]["deleteCopy"];
+  /** A T3 home that outlives one server, for state kept across restarts. */
+  readonly baseDir?: string;
 }) => {
   const record: Record = {
     targets: [],
@@ -202,6 +232,8 @@ const makeHarness = (input: {
     resets: [],
     tailnetJoins: [],
     destroyed: [],
+    stopped: [],
+    events: [],
     written: [],
     busyPorts: new Map(),
     resumed: [],
@@ -236,6 +268,42 @@ const makeHarness = (input: {
           ...input.settings,
         },
       }),
+    ),
+    Layer.provide(
+      Layer.succeed(ThreadImportService.ThreadImportService, {
+        importThread: () => Effect.die("No thread import expected"),
+        mirrorThread: (mirrorInput) =>
+          input.mirrorThread === undefined
+            ? Effect.die("No thread mirror expected")
+            : input
+                .mirrorThread(mirrorInput)
+                .pipe(
+                  Effect.tap(({ outcome }) =>
+                    Effect.sync(() =>
+                      record.events.push(
+                        `mirror:${mirrorInput.originKey} ${mirrorInput.projectId} ${outcome}`,
+                      ),
+                    ),
+                  ),
+                ),
+        deleteCopy: (originKey) =>
+          input.deleteCopy === undefined
+            ? Effect.die("No copy delete expected")
+            : input
+                .deleteCopy(originKey)
+                .pipe(
+                  Effect.tap(() => Effect.sync(() => record.events.push(`delete:${originKey}`))),
+                ),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        ensureScratchProject: Effect.succeed({ projectId: ProjectId.make("home-scratch") }),
+        namedProjectsRoot: "/unused",
+      }),
+    ),
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), input.baseDir ?? { prefix: "t3-boat-vm-config-" }),
     ),
     Layer.provide(NodeServices.layer),
     Layer.provide(
@@ -1465,16 +1533,501 @@ describe("boat VM launch env", () => {
 describe("boat VM naming", () => {
   it("turns SSH remotes into HTTPS", () => {
     assert.equal(
-      BoatVmService.boatVmCloneUrl("git@github.com:Kn0ax/t3code.git"),
-      "https://github.com/Kn0ax/t3code.git",
+      BoatVmService.boatVmCloneUrl("git@github.com:acme/app.git"),
+      "https://github.com/acme/app.git",
     );
     assert.equal(
-      BoatVmService.boatVmCloneUrl("ssh://git@github.com/Kn0ax/t3code.git"),
-      "https://github.com/Kn0ax/t3code.git",
+      BoatVmService.boatVmCloneUrl("ssh://git@github.com/acme/app.git"),
+      "https://github.com/acme/app.git",
     );
     assert.equal(
-      BoatVmService.boatVmCloneUrl("https://github.com/Kn0ax/t3code.git"),
-      "https://github.com/Kn0ax/t3code.git",
+      BoatVmService.boatVmCloneUrl("https://github.com/acme/app.git"),
+      "https://github.com/acme/app.git",
     );
+  });
+});
+
+const nowMs = Date.parse("2026-10-20T12:00:00.000Z");
+const minutesAgo = (minutes: number) =>
+  DateTime.formatIso(DateTime.makeUnsafe(nowMs - minutes * 60_000));
+const vmThread = (
+  id: string,
+  fields: Partial<BoatVmLifecycle.VmThread> = {},
+): BoatVmLifecycle.VmThread => ({
+  id,
+  projectId: "vm-project",
+  status: "idle",
+  settled: false,
+  snoozedUntil: null,
+  latestUserMessageAt: minutesAgo(5),
+  createdAt: minutesAgo(60),
+  version: "v1",
+  ...fields,
+});
+
+/** A thread snapshot as a VM's T3 answers it, with no history. */
+const snapshotOf = (id: string, projectId: string, archivedAt: string | null) =>
+  JSON.stringify({
+    snapshotSequence: 1,
+    projection: {
+      thread: {
+        id,
+        projectId,
+        title: "Fix the login",
+        providerInstanceId: "codex",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "main",
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { rootThreadId: id, parentThreadId: null, relationshipToParent: null },
+        forkedFrom: null,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: minutesAgo(60),
+        updatedAt: minutesAgo(1),
+        archivedAt,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+      runs: [],
+      attempts: [],
+      nodes: [],
+      subagents: [],
+      providerSessions: [],
+      providerThreads: [],
+      providerTurns: [],
+      runtimeRequests: [],
+      messages: [],
+      plans: [],
+      turnItems: [],
+      checkpointScopes: [],
+      checkpoints: [],
+      contextHandoffs: [],
+      contextTransfers: [],
+      visibleTurnItems: [],
+      updatedAt: minutesAgo(1),
+    },
+  });
+
+/** What the VM's own T3 holds: its unarchived threads, and which of the others are archived. */
+interface VmContents {
+  threads: Array<BoatVmLifecycle.VmThread>;
+  archived: Array<string>;
+}
+
+const vmRemote = "https://github.com/acme/app.git";
+const homeProjectId = ProjectId.make("home");
+const homeProject = {
+  id: homeProjectId,
+  workspaceRoot: "/home/app",
+  repositoryIdentity: {
+    canonicalKey: normalizeGitRemoteUrl(vmRemote),
+    locator: { source: "git-remote" as const, remoteName: "origin", remoteUrl: vmRemote },
+  },
+};
+const running = (sandboxId: string, label = `vm ${sandboxId}`): SandboxInfo => ({
+  ref: { providerId: "boat", sandboxId },
+  status: "running",
+  label,
+});
+
+/**
+ * A harness whose VMs answer the lifecycle's thread and snapshot scripts from
+ * `contents`; every other script runs as usual. VM threads in "vm-scratch"
+ * belong to a project with no repository remote.
+ */
+const makeLifecycleHarness = (
+  input: Parameters<typeof makeHarness>[0] & {
+    readonly contents: Map<string, VmContents>;
+    readonly execs?: Array<string>;
+    /** Threads whose snapshot was fetched. */
+    readonly fetched?: Array<string>;
+  },
+) => {
+  // An archived thread keeps the project it was listed in.
+  const projectOf = new Map<string, string>();
+  return makeHarness({
+    projects: [homeProject],
+    mirrorThread: (mirrorInput) =>
+      Effect.succeed({
+        threadId: ThreadId.make(`import:${mirrorInput.originKey}`),
+        outcome: "created" as const,
+      }),
+    deleteCopy: () => Effect.void,
+    ...input,
+    provider: (provider) => ({
+      ...provider,
+      exec: (ref, command) => {
+        const vm = input.contents.get(ref.sandboxId);
+        if (command.script === BoatVmLifecycle.VM_THREADS_SCRIPT) {
+          input.execs?.push(ref.sandboxId);
+          if (vm === undefined) return Effect.succeed({ exitCode: 3, stdout: "", stderr: "" });
+          for (const thread of vm.threads) projectOf.set(thread.id, thread.projectId);
+          const listed = new Set(vm.threads.map((thread) => thread.id));
+          const departed = (command.args ?? [])
+            .filter((id) => !listed.has(id))
+            .map((id) =>
+              vm.archived.includes(id)
+                ? { id, state: "archived", version: `${id}:archived` }
+                : { id, state: "deleted", version: null },
+            );
+          const stdout = JSON.stringify({
+            threads: vm.threads,
+            departed,
+            projects: [
+              { id: "vm-project", remoteUrl: vmRemote },
+              { id: "vm-scratch", remoteUrl: null },
+            ],
+          });
+          return Effect.succeed({ exitCode: 0, stdout, stderr: "" });
+        }
+        if (command.script === BoatVmLifecycle.THREAD_SNAPSHOT_SCRIPT) {
+          const threadId = command.args?.[0] ?? "";
+          input.fetched?.push(threadId);
+          const exists =
+            vm !== undefined &&
+            (vm.archived.includes(threadId) || vm.threads.some(({ id }) => id === threadId));
+          const stdout = exists ? `snapshot:${threadId}` : "missing";
+          return Effect.succeed({ exitCode: 0, stdout, stderr: "" });
+        }
+        return provider.exec(ref, command);
+      },
+      readFile: (ref, path) => {
+        if (!path.startsWith("snapshot:")) return provider.readFile(ref, path);
+        const threadId = path.slice("snapshot:".length);
+        const archived = input.contents.get(ref.sandboxId)?.archived.includes(threadId) ?? false;
+        const projectId = projectOf.get(threadId) ?? "vm-project";
+        return Effect.succeed(
+          new TextEncoder().encode(
+            snapshotOf(threadId, projectId, archived ? minutesAgo(1) : null),
+          ),
+        );
+      },
+    }),
+  });
+};
+
+const pass = BoatVmService.BoatVmService.use((vms) => vms.keepAlive);
+const logouts = (record: { tailnetJoins: ReadonlyArray<{ sandboxId: string; script: string }> }) =>
+  record.tailnetJoins
+    .filter((join) => join.script === BoatVmService.TAILNET_LOGOUT_SCRIPT)
+    .map((join) => join.sandboxId);
+const mirrored = (sandboxId: string, threadId: string, projectId: string = homeProjectId) =>
+  `mirror:boat-vm:${sandboxId}:${threadId} ${projectId} created`;
+const writeFailed = new EventSinkWriteError({ eventCount: 1 });
+/** Fails the first call with `error`, then succeeds. */
+const failOnce = <A, E>(error: E, succeed: () => Effect.Effect<A>) => {
+  let failures = 1;
+  return () => (failures-- > 0 ? Effect.fail(error) : succeed());
+};
+
+describe("boat VM lifecycle", () => {
+  it.effect("mirrors a VM's threads, refetching only threads that changed", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2")], archived: [] }],
+    ]);
+    const fetched: Array<string> = [];
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      fetched,
+      vms: [running("vm1"), { ...running("parked"), status: "stopped" }],
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      assert.deepEqual(record.events, [mirrored("vm1", "t1"), mirrored("vm1", "t2")]);
+
+      yield* pass;
+      contents.set("vm1", {
+        threads: [vmThread("t1", { version: "v2" }), vmThread("t2")],
+        archived: [],
+      });
+      yield* pass;
+
+      assert.deepEqual(fetched, ["t1", "t2", "t1"]);
+      assert.deepEqual(record.events.slice(2), [mirrored("vm1", "t1")]);
+      assert.deepEqual(record.stopped, []);
+      assert.deepEqual(record.destroyed, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("syncs a VM's threads once more, then deletes it once all are archived", () => {
+    const contents = new Map<string, VmContents>([
+      ["done", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const execs: Array<string> = [];
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      execs,
+      vms: [
+        running("done"),
+        { ...running("parked"), status: "stopped" },
+        running("job", "sandbox job 1"),
+      ],
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      assert.deepEqual(record.destroyed, []);
+
+      contents.set("done", { threads: [], archived: ["t1"] });
+      yield* pass;
+
+      assert.deepEqual(record.events, [
+        mirrored("done", "t1"),
+        mirrored("done", "t1"),
+        "destroy:done",
+      ]);
+      assert.deepEqual(logouts(record), ["done"]);
+      assert.deepEqual(record.stopped, []);
+      // Stopped VMs and other sandboxes are never read.
+      assert.deepEqual(execs, ["done", "done"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("deletes the copy of a thread deleted on the VM, and counts settled as done", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2"), vmThread("t3")], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({ contents, vms: [running("vm1")] });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+
+      // t2 was deleted, t3 archived, and t1 settled.
+      contents.set("vm1", { threads: [vmThread("t1", { settled: true })], archived: ["t3"] });
+      yield* pass;
+
+      assert.deepEqual(record.events.slice(3), [
+        "delete:boat-vm:vm1:t2",
+        mirrored("vm1", "t3"),
+        "destroy:vm1",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps a VM while one thread is still active", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2", { settled: true })], archived: ["t3"] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({ contents, vms: [running("vm1")] });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      yield* pass;
+      assert.deepEqual(record.events, [mirrored("vm1", "t1"), mirrored("vm1", "t2")]);
+      assert.deepEqual(record.stopped, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("never copies a thread deleted before it was mirrored", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      // No project here has the repository, so t1 is never mirrored.
+      projects: [],
+      deleteCopy: () => Effect.die("A thread never mirrored has no copy"),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("vm1", { threads: [], archived: [] });
+      yield* pass;
+      assert.deepEqual(record.events, ["destroy:vm1"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps a VM when its final sync fails and retries on the next pass", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    let calls = 0;
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      // The second call, the sync once t1 is archived, fails.
+      mirrorThread: () =>
+        ++calls === 2
+          ? Effect.fail(writeFailed)
+          : Effect.succeed({ threadId: ThreadId.make("import:copy"), outcome: "created" as const }),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("vm1", { threads: [], archived: ["t1"] });
+
+      yield* pass;
+      assert.deepEqual(record.destroyed, []);
+
+      yield* pass;
+      assert.deepEqual(record.events, [
+        mirrored("vm1", "t1"),
+        mirrored("vm1", "t1"),
+        "destroy:vm1",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("blocks a delete while a copy of a deleted thread cannot be removed", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      deleteCopy: failOnce(
+        new OrchestratorProjectionError({ threadId: ThreadId.make("import:copy") }),
+        () => Effect.void,
+      ),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("vm1", { threads: [], archived: [] });
+      yield* pass;
+      assert.deepEqual(record.destroyed, []);
+      yield* pass;
+      assert.deepEqual(record.events, [
+        mirrored("vm1", "t1"),
+        "delete:boat-vm:vm1:t1",
+        "destroy:vm1",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("remembers mirrored threads across a server restart", () => {
+    const baseDir = NodePath.join(scratch, "t3-home");
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2")], archived: [] }],
+    ]);
+    const fetched: Array<string> = [];
+    const before = makeLifecycleHarness({ contents, vms: [running("vm1")], baseDir });
+    const after = makeLifecycleHarness({ contents, vms: [running("vm1")], baseDir, fetched });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass.pipe(Effect.provide(before.layer));
+      contents.set("vm1", { threads: [vmThread("t2")], archived: ["t1"] });
+      yield* pass.pipe(Effect.provide(after.layer));
+      // t2 is unchanged since the restart, so only the archived t1 is fetched again.
+      assert.deepEqual(fetched, ["t1"]);
+      assert.deepEqual(after.record.events, [mirrored("vm1", "t1")]);
+    });
+  });
+
+  it.effect("syncs before stopping a quiet VM, and stops it even when the sync fails", () => {
+    const contents = new Map<string, VmContents>([
+      ["snoozed", { threads: [vmThread("t1", { snoozedUntil: minutesAgo(-60) })], archived: [] }],
+      [
+        "quiet",
+        { threads: [vmThread("t2", { latestUserMessageAt: minutesAgo(45) })], archived: [] },
+      ],
+      [
+        "working",
+        {
+          threads: [vmThread("t3", { status: "running", latestUserMessageAt: minutesAgo(45) })],
+          archived: [],
+        },
+      ],
+    ]);
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("snoozed"), running("quiet"), running("working")],
+      mirrorThread: (mirrorInput) =>
+        mirrorInput.originKey === "boat-vm:quiet:t2"
+          ? Effect.fail(writeFailed)
+          : Effect.succeed({
+              threadId: ThreadId.make(`import:${mirrorInput.originKey}`),
+              outcome: "created" as const,
+            }),
+    });
+    for (const sandboxId of ["snoozed", "quiet", "working"]) {
+      const userdata = NodePath.join(homeOf(sandboxId), ".t3", "userdata");
+      NodeFS.mkdirSync(userdata, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(userdata, "statev2.sqlite-wal"), "");
+    }
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      assert.sameMembers(record.stopped, ["snoozed", "quiet"]);
+      assert.deepEqual(
+        record.events.filter((event) => event.includes("snoozed")),
+        [mirrored("snoozed", "t1"), "stop:snoozed"],
+      );
+      assert.deepEqual(
+        record.extended.map((entry) => entry.sandboxId),
+        ["working"],
+      );
+      assert.deepEqual(record.destroyed, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops mirroring a thread whose copy was continued here", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const fetched: Array<string> = [];
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      fetched,
+      vms: [running("vm1")],
+      mirrorThread: () =>
+        Effect.succeed({ threadId: ThreadId.make("import:copy"), outcome: "continued" as const }),
+      deleteCopy: () => Effect.die("A continued copy is never deleted"),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("vm1", { threads: [vmThread("t1", { version: "v2" })], archived: [] });
+      yield* pass;
+      assert.deepEqual(fetched, ["t1"]);
+
+      contents.set("vm1", { threads: [], archived: [] });
+      yield* pass;
+      assert.deepEqual(record.events, ["mirror:boat-vm:vm1:t1 home continued", "destroy:vm1"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("mirrors a scratch VM's threads into this server's scratch project", () => {
+    const contents = new Map<string, VmContents>([
+      ["scratch", { threads: [vmThread("t1", { projectId: "vm-scratch" })], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({ contents, vms: [running("scratch")] });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("scratch", { threads: [], archived: ["t1"] });
+      yield* pass;
+      assert.deepEqual(record.events, [
+        mirrored("scratch", "t1", "home-scratch"),
+        mirrored("scratch", "t1", "home-scratch"),
+        "destroy:scratch",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("leaves a VM the user just resumed running for the idle window", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1", { snoozedUntil: minutesAgo(-60) })], archived: [] }],
+    ]);
+    // Listed as running, as boat lists it once the resume began.
+    const { record, layer } = makeLifecycleHarness({ contents, vms: [running("vm1")] });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      const vms = yield* BoatVmService.BoatVmService;
+      yield* vms.launch({ repository: repository(), sandboxId: "vm1" });
+      yield* vms.keepAlive;
+      assert.deepEqual(record.stopped, []);
+
+      yield* TestClock.adjust("31 minutes");
+      yield* vms.keepAlive;
+      assert.deepEqual(record.stopped, ["vm1"]);
+    }).pipe(Effect.provide(layer));
   });
 });

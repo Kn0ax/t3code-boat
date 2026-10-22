@@ -448,6 +448,12 @@ key for them. Start, send, complete and discard need a full-access caller. When
 a run ends, the starting thread gets a queued message with its result. See
 [cloud sandboxes](../internals/cloud-sandboxes.md#sandbox-jobs).
 
+`boat_vm_list`, `boat_vm_bring_home` and `boat_vm_save_snapshot` reach the boat
+VMs this environment made. Listing describes how the server stops and deletes
+VMs as their threads are snoozed, archived, settled or deleted. Bringing work
+home and saving a snapshot need a full-access caller. Starting a VM stays in the
+client, which pairs with the new environment.
+
 ## Delegated Task Lifecycle
 
 The MCP server is a command ingress into V2. It does not call provider adapters

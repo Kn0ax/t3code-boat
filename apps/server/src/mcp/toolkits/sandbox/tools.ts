@@ -1,4 +1,9 @@
 import {
+  BoatVmBringHomeInput,
+  BoatVmBringHomeResult,
+  BoatVmListResult,
+  BoatVmSaveSnapshotInput,
+  BoatVmSnapshotState,
   OrchestratorMcpFailure,
   SandboxJob,
   SandboxJobCompleteInput,
@@ -16,6 +21,7 @@ import { Tool, Toolkit } from "effect/ai";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as BoatVmService from "../../../sandbox/BoatVmService.ts";
 import * as SandboxJobService from "../../../sandbox/SandboxJobService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -145,6 +151,56 @@ const SandboxJobReadTool = Tool.make("sandbox_job_read", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
+const boatVmDependencies = [
+  McpInvocationContext.McpInvocationContext,
+  ThreadManagementService.ThreadManagementService,
+  BoatVmService.BoatVmService,
+];
+
+const BoatVmListTool = Tool.make("boat_vm_list", {
+  description:
+    "List the boat VMs this environment made (label and status: running, stopped, creating or destroyed). available is false until a boat key is saved in Settings. A boat VM is a full T3 environment of its own: threads that run on it live in the VM's T3, not here, and a user starts one from Run on in a new thread. This server mirrors each running VM's threads about every 5 minutes into this environment's project for the same repository (or its No project for a VM without one); deleted threads are not copied, and deleting a thread on the VM deletes its copy. It also manages each running VM by its threads, after one last sync: once every thread is snoozed or has had no message for the idle window, the VM stops and keeps its disk (Run on or Start VM resumes it); once every thread is archived, settled or deleted, the VM is deleted, unless a copy failed, in which case it is kept. A copy keeps the conversation, not the VM's files: use boat_vm_bring_home first for commits.",
+  success: BoatVmListResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: boatVmDependencies,
+})
+  .annotate(Tool.Title, "List boat VMs")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const BoatVmBringHomeTool = Tool.make("boat_vm_bring_home", {
+  description:
+    "Fetch the branches of every checkout on a boat VM into this environment's checkout of the same repository, as refs/t3/boat/<sandboxId>/<branch>. Resumes a stopped VM. Nothing is pushed, the local checkout is not touched, and uncommitted files stay on the VM. unmatched lists VM checkouts with no project here.",
+  parameters: BoatVmBringHomeInput,
+  success: BoatVmBringHomeResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: boatVmDependencies,
+})
+  .annotate(Tool.Title, "Bring boat VM work home")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const BoatVmSaveSnapshotTool = Tool.make("boat_vm_save_snapshot", {
+  description:
+    "Start saving a boat VM's disk as a named boat snapshot. New VMs for a repository start from t3-<owner>-<repo> (lowercase), so saving under that name makes the next launch start from this VM. Reusing a name replaces that snapshot once the new one is ready. Returns while boat is still saving, which can take several minutes.",
+  parameters: BoatVmSaveSnapshotInput,
+  success: BoatVmSnapshotState,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: boatVmDependencies,
+})
+  .annotate(Tool.Title, "Save a boat VM as a snapshot")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
 export const SandboxToolkit = Toolkit.make(
   SandboxJobStartTool,
   SandboxJobStatusTool,
@@ -154,4 +210,7 @@ export const SandboxToolkit = Toolkit.make(
   SandboxJobDiscardTool,
   SandboxJobListTool,
   SandboxJobReadTool,
+  BoatVmListTool,
+  BoatVmBringHomeTool,
+  BoatVmSaveSnapshotTool,
 );

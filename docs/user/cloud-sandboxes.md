@@ -129,6 +129,27 @@ holds the boat key keeps VMs up, so run that server on a machine that stays
 on. A VM started from a desktop app archives when that computer sleeps or the
 app quits.
 
+That server also keeps a copy of every thread on its running VMs. About
+every 5 minutes it copies new messages and tool activity from the VM's threads
+to its own project for the same repository, or to its **No project** for a VM
+started without one. Deleted threads are never copied, and deleting a thread on
+the VM deletes its copy. If you send a message in a copy, it becomes your own
+thread and stops following the VM.
+
+On the same check, it acts once every thread on a VM agrees, after copying the
+threads one last time:
+
+- Every thread snoozed, or without a message for the minutes you set: the VM
+  stops and keeps its disk. Picking it in **Run on**, or **Start VM** on its
+  thread, resumes it.
+- Every thread archived, settled, or deleted: the VM is deleted. If a copy
+  fails, for example because no project there has that repository, the VM is
+  kept and the copy retried.
+- A VM you just started or resumed is left alone for the minutes you set.
+
+A copy keeps the conversation and tool activity, but not checkpoints or
+uncommitted files. Use **Bring boat VM work home** first for commits you want.
+
 **Bring boat VM work home** in the command palette fetches the VM's branches
 into the local checkout as `refs/t3/boat/<vm-id>/<branch>`. Nothing is pushed.
 Uncommitted files stay on the VM.

@@ -1,8 +1,9 @@
-import { OrchestratorMcpFailure, type ProjectId } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, type BoatVmError, type ProjectId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as Project from "../../../project/ProjectService.ts";
+import * as BoatVmService from "../../../sandbox/BoatVmService.ts";
 import * as SandboxJobService from "../../../sandbox/SandboxJobService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, unavailable, type Caller } from "../../threadAccess.ts";
@@ -33,6 +34,9 @@ const workspaceRootFor = Effect.fn("mcp.sandbox.workspaceRoot")(function* (
 });
 
 const service = SandboxJobService.SandboxJobService;
+const boatVms = BoatVmService.BoatVmService;
+const boatVmFailure = (error: BoatVmError) =>
+  new OrchestratorMcpFailure({ code: "sandbox_failed", message: error.message });
 
 const handlers = {
   // Spends money and runs a full-access agent, so only a full-access caller may.
@@ -81,6 +85,20 @@ const handlers = {
       Effect.andThen(service),
       Effect.flatMap((jobs) => jobs.read(input)),
     ),
+  ),
+  boat_vm_list: McpToolAccess.reads(() =>
+    readCaller().pipe(
+      Effect.andThen(boatVms),
+      Effect.flatMap((vms) => vms.list),
+      Effect.mapError((error) => (error._tag === "BoatVmError" ? boatVmFailure(error) : error)),
+    ),
+  ),
+  // Both write into this environment's repositories or the boat account.
+  boat_vm_bring_home: McpToolAccess.writesEnvironment((input) =>
+    Effect.flatMap(boatVms, (vms) => vms.bringHome(input)).pipe(Effect.mapError(boatVmFailure)),
+  ),
+  boat_vm_save_snapshot: McpToolAccess.writesEnvironment((input) =>
+    Effect.flatMap(boatVms, (vms) => vms.saveSnapshot(input)).pipe(Effect.mapError(boatVmFailure)),
   ),
 } satisfies McpToolAccess.Handlers<typeof SandboxToolkit.tools>;
 

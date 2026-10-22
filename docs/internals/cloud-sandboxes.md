@@ -71,6 +71,21 @@ is up: maintenance calls `extendAutoStop` for a job that is not being stopped fo
 keep-alive does the same while the VM looks busy. If that server goes away, the sandbox still stops
 at the last deadline.
 
+A connected client counts as busy, so the same pass also applies the VM lifecycle
+(`apps/server/src/sandbox/BoatVmLifecycle.ts`) from the threads on the VM, and a VM it stops or
+deletes gets no new deadline. Those threads live in the VM's own T3, which this server holds no
+session for: the pass runs a script in the VM that issues a short-lived read token from the VM's
+`t3` and asks its HTTP API over loopback, so no VM credential is stored here. The shell lists only
+unarchived threads, so the server remembers the threads seen on each VM in
+`boat-vm-threads.json` under its state directory.
+
+Before the rules, the pass mirrors each changed VM thread into a local `import:boat-vm:…` thread
+through `ThreadImportService.mirrorThread`, which writes only new or changed messages and items. The
+state file keeps a version per mirrored thread, built from shell fields, so an unchanged thread is
+never fetched; this mirror is also the final sync before a stop or delete. A failed sync blocks a
+delete but not a stop, since a stopped VM keeps its disk. A copy that has a run of its own was
+continued locally, so it is left alone from then on, and never deleted with its VM thread.
+
 boat VMs are reached over Tailscale rather than boat's public port URL, so they need no loopback
 forward and every client on the tailnet can pair with them. A VM made from a named snapshot inherits
 the snapshot source's Tailscale node key; the join script drops that state when the VM's id differs

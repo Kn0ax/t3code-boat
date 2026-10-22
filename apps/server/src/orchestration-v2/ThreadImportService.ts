@@ -9,6 +9,7 @@
  * @module ThreadImportService
  */
 import {
+  CommandId,
   EventId,
   MessageId,
   ThreadId,
@@ -17,10 +18,12 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadImportInput,
   type OrchestrationV2ThreadImportResult,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type ProjectId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -53,11 +56,16 @@ function importedThreadEvents(input: {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
+  /** Set when updating a copy, since event ids must stay unique across updates. */
+  readonly revision?: number;
 }): ReadonlyArray<OrchestrationV2DomainEvent> {
   const { threadId, projectId } = input;
   const source = input.snapshot.projection;
   const messagesById = new Map(source.messages.map((message) => [message.id, message]));
-  const prefix = `thread-import:${threadId}`;
+  const prefix =
+    input.revision === undefined
+      ? `thread-import:${threadId}`
+      : `thread-import:${threadId}:${input.revision}`;
   const itemId = (id: string) => TurnItemId.make(`${threadId}:${id}`);
   const messageId = (id: string) => MessageId.make(`${threadId}:${id}`);
 
@@ -141,6 +149,57 @@ function importedThreadEvents(input: {
   return events;
 }
 
+/**
+ * The events that bring an earlier copy up to `snapshot`: only new or changed
+ * messages and items, and the title when it changed.
+ */
+function mirrorUpdateEvents(input: {
+  readonly home: Pick<OrchestrationV2ThreadProjection, "thread" | "messages" | "turnItems">;
+  readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
+}): ReadonlyArray<OrchestrationV2DomainEvent> {
+  const { home, snapshot } = input;
+  const messages = new Map(home.messages.map((message) => [message.id, message]));
+  const items = new Map(home.turnItems.map((item) => [item.id, item]));
+  const sameTime = (a: DateTime.Utc, b: DateTime.Utc) =>
+    DateTime.toEpochMillis(a) === DateTime.toEpochMillis(b);
+  const changed = importedThreadEvents({
+    threadId: home.thread.id,
+    projectId: home.thread.projectId,
+    snapshot,
+    revision: snapshot.snapshotSequence,
+  }).filter((event) => {
+    if (event.type === "message.updated") {
+      const current = messages.get(event.payload.id);
+      return (
+        current === undefined ||
+        current.text !== event.payload.text ||
+        !sameTime(current.updatedAt, event.payload.updatedAt)
+      );
+    }
+    if (event.type === "turn-item.updated") {
+      const current = items.get(event.payload.id);
+      return (
+        current === undefined ||
+        current.ordinal !== event.payload.ordinal ||
+        !sameTime(current.updatedAt, event.payload.updatedAt)
+      );
+    }
+    return false;
+  });
+  const title = snapshot.projection.thread.title;
+  if (title === home.thread.title) return changed;
+  return [
+    {
+      id: EventId.make(`thread-import:${home.thread.id}:${snapshot.snapshotSequence}:title`),
+      type: "thread.metadata-updated",
+      threadId: home.thread.id,
+      occurredAt: snapshot.projection.thread.updatedAt,
+      payload: { ...home.thread, title },
+    },
+    ...changed,
+  ];
+}
+
 export class ThreadImportProjectNotFoundError extends Schema.TaggedError<ThreadImportProjectNotFoundError>()(
   "ThreadImportProjectNotFoundError",
   { repositoryRemoteUrl: Schema.String },
@@ -161,6 +220,25 @@ export class ThreadImportService extends Context.Service<
       | ProjectService.ProjectOperationError
       | EventSink.EventSinkV2Error
     >;
+    /**
+     * Creates the copy of `originKey` in `projectId`, or brings an existing copy
+     * up to `snapshot`. A copy someone deleted, or continued here, is left alone.
+     */
+    readonly mirrorThread: (input: {
+      readonly originKey: string;
+      readonly projectId: ProjectId;
+      readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
+    }) => Effect.Effect<
+      {
+        readonly threadId: ThreadId;
+        readonly outcome: "created" | "updated" | "unchanged" | "deleted" | "continued";
+      },
+      EventSink.EventSinkV2Error | Orchestrator.OrchestratorV2Error
+    >;
+    /** Deletes the copy of `originKey`, if there is one and it was not continued here. */
+    readonly deleteCopy: (
+      originKey: string,
+    ) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
   }
 >()("t3/orchestration-v2/ThreadImportService") {}
 
@@ -189,7 +267,49 @@ const make = Effect.gen(function* () {
     return { threadId, projectId: project.id, created: true };
   });
 
-  return ThreadImportService.of({ importThread });
+  // A copy carries no runs, so a run on it means someone continued it here.
+  const readCopy = (threadId: ThreadId) =>
+    Effect.option(orchestrator.getThreadRecords(threadId, ["runs", "messages", "turnItems"]));
+
+  const mirrorThread: ThreadImportService["Service"]["mirrorThread"] = Effect.fn(
+    "ThreadImportService.mirrorThread",
+  )(function* (input) {
+    const threadId = importedThreadId(input.originKey);
+    const existing = yield* readCopy(threadId);
+    if (Option.isNone(existing)) {
+      yield* eventSink.write({
+        events: importedThreadEvents({
+          threadId,
+          projectId: input.projectId,
+          snapshot: input.snapshot,
+        }),
+      });
+      return { threadId, outcome: "created" as const };
+    }
+    const home = existing.value;
+    if (home.thread.deletedAt !== null) return { threadId, outcome: "deleted" as const };
+    if (home.runs.length > 0) return { threadId, outcome: "continued" as const };
+    const events = mirrorUpdateEvents({ home, snapshot: input.snapshot });
+    if (events.length === 0) return { threadId, outcome: "unchanged" as const };
+    yield* eventSink.write({ events });
+    return { threadId, outcome: "updated" as const };
+  });
+
+  const deleteCopy: ThreadImportService["Service"]["deleteCopy"] = Effect.fn(
+    "ThreadImportService.deleteCopy",
+  )(function* (originKey) {
+    const threadId = importedThreadId(originKey);
+    const existing = yield* readCopy(threadId);
+    if (Option.isNone(existing) || existing.value.thread.deletedAt !== null) return;
+    if (existing.value.runs.length > 0) return;
+    yield* orchestrator.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make(`thread-import-delete:${threadId}`),
+      threadId,
+    });
+  });
+
+  return ThreadImportService.of({ importThread, mirrorThread, deleteCopy });
 });
 
 export const layer = Layer.effect(ThreadImportService, make);

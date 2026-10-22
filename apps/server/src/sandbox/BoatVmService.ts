@@ -67,11 +67,15 @@ import type * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import packageJson from "../../package.json" with { type: "json" };
+import * as ServerConfig from "../config.ts";
+import * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { projectShellForRemote } from "../project/repositoryRemote.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BoatVmProxy from "./BoatVmProxy.ts";
 import * as BoatCatalog from "./BoatCatalog.ts";
+import * as BoatVmLifecycle from "./BoatVmLifecycle.ts";
 import * as BoatVmLaunches from "./BoatVmLaunches.ts";
 import { sandboxT3Version } from "./SandboxJobService.ts";
 
@@ -506,7 +510,11 @@ export class BoatVmService extends Context.Service<
     readonly bringHome: (
       input: BoatVmBringHomeInput,
     ) => Effect.Effect<BoatVmBringHomeResult, BoatVmError>;
-    /** Pushes out the deadline of every running VM that had work since the last check. */
+    /**
+     * Applies the VM lifecycle rules to every running VM (see BoatVmLifecycle),
+     * then pushes out the deadline of each one left running that had work since
+     * the last check.
+     */
     readonly keepAlive: Effect.Effect<void>;
     /** The account's named snapshots and environments; unavailable without a boat key. */
     readonly catalog: Effect.Effect<BoatVmCatalog, BoatVmError>;
@@ -537,11 +545,34 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   const boatProxy = yield* BoatVmProxy.BoatVmProxy;
   const crypto = yield* Crypto.Crypto;
   const projects = yield* ProjectService.ProjectService;
+  const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const scope = yield* Effect.scope;
   const t3Version = options.t3Version ?? sandboxT3Version(packageJson.version);
+  const lifecycle = yield* BoatVmLifecycle.make({
+    statePath: path.join((yield* ServerConfig.ServerConfig).stateDir, "boat-vm-threads.json"),
+    manager,
+    threadImport: yield* ThreadImportService.ThreadImportService,
+    homeProjectFor: (remoteUrl) =>
+      remoteUrl === null
+        ? managedFolders.ensureScratchProject.pipe(
+            Effect.map(({ projectId }) => projectId),
+            Effect.mapError((error) => error.message),
+          )
+        : projects.listShells().pipe(
+            Effect.mapError(() => "this environment's projects could not be read"),
+            Effect.flatMap((shells) => {
+              const project = projectShellForRemote(shells, remoteUrl);
+              return project === undefined
+                ? Effect.fail(`no project here is a checkout of ${remoteUrl}`)
+                : Effect.succeed(project.id);
+            }),
+          ),
+    beforeDelete: (provider, ref) =>
+      provider.exec(ref, { script: TAILNET_LOGOUT_SCRIPT, timeoutMs: 20_000 }).pipe(Effect.ignore),
+  });
 
   const resolveProvider: BoatProviderResolver =
     options.resolveProvider ??
@@ -830,6 +861,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           created = { provider: boat, ref: bootstrap.ref };
         } else {
           const ref: SandboxRef = { providerId: "boat", sandboxId: input.sandboxId };
+          yield* lifecycle.markLaunched(input.sandboxId);
           bootstrap = yield* manager.reconnect({ provider, ref, t3Version, resume: true });
           label = (yield* provider.get(ref)).label;
           // A resume keeps the old deadline, which may be minutes away.
@@ -887,6 +919,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           tailnetFiber === undefined
             ? undefined
             : yield* report({ stage: "tailscale" }).pipe(Effect.andThen(Fiber.join(tailnetFiber)));
+        yield* lifecycle.markLaunched(bootstrap.ref.sandboxId);
 
         return {
           sandboxId: bootstrap.ref.sandboxId,
@@ -1106,31 +1139,48 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     Effect.gen(function* () {
       const settings = yield* getSettings;
       const provider = yield* resolveProvider(settings);
-      if (provider === undefined || provider.extendAutoStop === undefined) return;
+      if (provider === undefined) return;
       const extend = provider.extendAutoStop;
-      const running = (yield* listVms(provider)).filter((vm) => vm.status === "running");
+      const vms = yield* listVms(provider);
+      const running = vms.filter((vm) => vm.status === "running");
       yield* Effect.forEach(
         running,
         (vm) =>
-          provider
-            .exec(vm.ref, {
-              script: BUSY_SCRIPT,
-              args: [String(KEEP_ALIVE_INTERVAL_MINUTES + 1), busyPortArg(T3_PORT)],
-              timeoutMs: 60_000,
-            })
-            .pipe(
-              Effect.flatMap((result) =>
-                result.exitCode === 0 ? extend(vm.ref, settings.boatVmIdleMinutes) : Effect.void,
-              ),
-              Effect.catch((error) =>
-                Effect.logWarning("boat.vm.keepAlive.failed", {
-                  sandboxId: vm.ref.sandboxId,
-                  error: error.message,
-                }),
-              ),
+          lifecycle.apply(provider, vm.ref, settings.boatVmIdleMinutes).pipe(
+            // A VM the lifecycle stopped or deleted must not get a new deadline.
+            Effect.flatMap((outcome) =>
+              outcome !== "kept" || extend === undefined
+                ? Effect.void
+                : provider
+                    .exec(vm.ref, {
+                      script: BUSY_SCRIPT,
+                      args: [String(KEEP_ALIVE_INTERVAL_MINUTES + 1), busyPortArg(T3_PORT)],
+                      timeoutMs: 60_000,
+                    })
+                    .pipe(
+                      Effect.flatMap((result) =>
+                        result.exitCode === 0
+                          ? extend(vm.ref, settings.boatVmIdleMinutes)
+                          : Effect.void,
+                      ),
+                    ),
             ),
+            Effect.catch((error) =>
+              Effect.logWarning("boat.vm.keepAlive.failed", {
+                sandboxId: vm.ref.sandboxId,
+                error: error.message,
+              }),
+            ),
+          ),
         { concurrency: 4, discard: true },
       );
+      yield* lifecycle
+        .save(new Set(vms.filter((vm) => vm.status !== "destroyed").map((vm) => vm.ref.sandboxId)))
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("boat.vm.lifecycle.saveFailed", { error: String(error) }),
+          ),
+        );
     }),
   ).pipe(
     Effect.catch((error) =>

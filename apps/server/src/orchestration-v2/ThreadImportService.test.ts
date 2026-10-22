@@ -3,15 +3,20 @@ import {
   EventId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
+  OrchestrationV2Run,
   OrchestrationV2TurnItem,
   ProjectId,
+  RunId,
+  ThreadId,
   type OrchestrationProjectShell,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -251,4 +256,157 @@ it.effect("refuses a thread whose repository has no project here", () =>
       ),
     ),
   ),
+);
+
+const decodeRun = Schema.decodeUnknownSync(OrchestrationV2Run);
+
+it.effect("mirrors a thread: creates the copy, then adds only what is new", () =>
+  Effect.gen(function* () {
+    const runtime = ProviderReplayHarness.layerWithRegistry(
+      { name: "thread-mirror" },
+      ProviderAdapterRegistry.layerFromAdapters([]),
+      { runEffectWorker: false },
+    );
+    const services = yield* Layer.build(
+      Layer.mergeAll(
+        runtime,
+        ThreadImportService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              runtime,
+              Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed([]) }),
+            ),
+          ),
+        ),
+      ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+    );
+    const orchestrator = Context.get(services, Orchestrator.OrchestratorV2);
+    const importer = Context.get(services, ThreadImportService.ThreadImportService);
+    const sql = Context.get(services, SqlClient.SqlClient);
+    const copyId = ThreadId.make("import:boat-vm:bx_1:vm-thread");
+    const storedEvents = () =>
+      sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id = ${copyId}
+      `.pipe(Effect.map((rows) => rows[0]?.count ?? 0));
+    const snapshotWith = (sequence: number, count: number) => {
+      const items = vmItems.filter((item) => item.type !== "checkpoint").slice(0, count);
+      return {
+        snapshotSequence: sequence,
+        projection: {
+          ...({} as OrchestrationV2ThreadProjection),
+          thread: { ...vmThread, archivedAt: null, settledOverride: null, settledAt: null },
+          messages: vmMessages.filter((message) =>
+            items.some((item) => "messageId" in item && item.messageId === message.id),
+          ),
+          visibleTurnItems: items.map((item, position) => ({
+            visibility: "local" as const,
+            sourceThreadId: vmThread.id,
+            sourceItemId: item.id,
+            position,
+            item,
+          })),
+        },
+      };
+    };
+    const mirror = (snapshot: ReturnType<typeof snapshotWith>) =>
+      importer.mirrorThread({
+        originKey: "boat-vm:bx_1:vm-thread",
+        projectId: homeProjectId,
+        snapshot,
+      });
+
+    expect(yield* mirror(snapshotWith(5, 2))).toEqual({ threadId: copyId, outcome: "created" });
+    // thread.created, then the user message and its item, then the command item.
+    expect(yield* storedEvents()).toBe(4);
+    expect((yield* mirror(snapshotWith(5, 2))).outcome).toBe("unchanged");
+    expect(yield* storedEvents()).toBe(4);
+
+    expect((yield* mirror(snapshotWith(9, 3))).outcome).toBe("updated");
+    expect(yield* storedEvents()).toBe(6);
+    const copy = yield* orchestrator.getThreadSnapshot(copyId);
+    expect(copy.projection.thread.archivedAt).toBeNull();
+    expect(copy.projection.messages.map((message) => message.text)).toEqual([
+      "Fix the login",
+      "Fixed it.",
+    ]);
+
+    // Someone continued the copy here: it carries a run of its own now.
+    yield* Context.get(services, EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("home-run"),
+          type: "run.created",
+          threadId: copyId,
+          runId: RunId.make("home-run"),
+          occurredAt: now,
+          payload: decodeRun({
+            id: "home-run",
+            threadId: copyId,
+            ordinal: 1,
+            providerInstanceId: "codex",
+            modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+            providerThreadId: null,
+            userMessageId: "home-message",
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            checkpointId: null,
+            contextHandoffId: null,
+          }),
+        },
+      ],
+    });
+    const before = yield* storedEvents();
+    expect((yield* mirror(snapshotWith(12, 3))).outcome).toBe("continued");
+    yield* importer.deleteCopy("boat-vm:bx_1:vm-thread");
+    expect(yield* storedEvents()).toBe(before);
+    expect((yield* orchestrator.getThreadRecords(copyId, [])).thread.deletedAt).toBeNull();
+  }),
+);
+
+it.effect("deletes a mirrored copy and never brings it back", () =>
+  Effect.gen(function* () {
+    const runtime = ProviderReplayHarness.layerWithRegistry(
+      { name: "thread-mirror-delete" },
+      ProviderAdapterRegistry.layerFromAdapters([]),
+      { runEffectWorker: false },
+    );
+    const services = yield* Layer.build(
+      Layer.mergeAll(
+        runtime,
+        ThreadImportService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              runtime,
+              Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed([]) }),
+            ),
+          ),
+        ),
+      ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+    );
+    const orchestrator = Context.get(services, Orchestrator.OrchestratorV2);
+    const importer = Context.get(services, ThreadImportService.ThreadImportService);
+    const input = {
+      originKey: "boat-vm:bx_1:vm-thread",
+      projectId: homeProjectId,
+      snapshot: {
+        snapshotSequence: 3,
+        projection: {
+          ...({} as OrchestrationV2ThreadProjection),
+          thread: vmThread,
+          messages: [],
+          visibleTurnItems: [],
+        },
+      },
+    };
+    const { threadId } = yield* importer.mirrorThread(input);
+
+    yield* importer.deleteCopy(input.originKey);
+
+    expect((yield* orchestrator.getThreadRecords(threadId, [])).thread.deletedAt).not.toBeNull();
+    expect((yield* importer.mirrorThread(input)).outcome).toBe("deleted");
+  }),
 );
