@@ -175,6 +175,39 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
     }),
   );
 
+  it.effect("a full copy keeps settled threads but still drops live ones", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-full-" });
+      const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-full-dest-" });
+      const source = yield* createFixtureSource(sourceDir);
+
+      const result = yield* runMigrateDevDb(
+        {
+          baseDir: destDir,
+          source,
+          projects: 5,
+          threadsPerProject: 100,
+          includeSettledAndArchived: true,
+        },
+        { sharedHome: sourceDir },
+      );
+
+      const threads = yield* withDatabase(
+        result.databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql<{ thread_id: string }>`
+            SELECT thread_id FROM orchestration_v2_projection_threads ORDER BY thread_id`;
+        }),
+      );
+      assert.deepStrictEqual(
+        threads.map((row) => row.thread_id),
+        ["fork-thread", "settled-thread", "stopped-thread"],
+      );
+    }),
+  );
+
   it.effect("upgrades a source from before the V2 thread tables", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

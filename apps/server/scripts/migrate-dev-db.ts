@@ -119,6 +119,8 @@ export interface RunMigrateDevDbInput {
   readonly source?: string | undefined;
   readonly projects: number;
   readonly threadsPerProject: number;
+  /** Also keeps settled and archived threads, for a full copy rather than a dev sample. */
+  readonly includeSettledAndArchived?: boolean | undefined;
 }
 
 export interface RunMigrateDevDbOptions {
@@ -217,7 +219,12 @@ const CLEARED_TABLES: ReadonlyArray<string> = [
 
 const PROVIDER_SESSIONS_TABLE = "orchestration_v2_projection_provider_sessions";
 
-const rootIsVisible = (sql: SqlClient.SqlClient) => sql`
+const rootIsVisible = (sql: SqlClient.SqlClient, includeSettledAndArchived = false) =>
+  includeSettledAndArchived
+    ? sql`
+  root.deleted_at IS NULL
+  AND json_extract(root.payload_json, '$.deletedAt') IS NULL`
+    : sql`
   root.deleted_at IS NULL
   AND json_extract(root.payload_json, '$.deletedAt') IS NULL
   AND json_extract(root.payload_json, '$.archivedAt') IS NULL
@@ -227,7 +234,10 @@ const rootIsVisible = (sql: SqlClient.SqlClient) => sql`
 /**
  * One transaction reads the source, so the copy is consistent while the real server writes.
  */
-const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath: string) {
+const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (
+  sourcePath: string,
+  includeSettledAndArchived: boolean,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ATTACH DATABASE ${`${NodeURL.pathToFileURL(sourcePath).href}?mode=ro`} AS src`;
   const schema = yield* sql<{ type: string; name: string; sql: string }>`
@@ -249,7 +259,7 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
           SELECT family.thread_id FROM src.orchestration_v2_projection_threads family
           JOIN src.orchestration_v2_projection_threads root ON root.thread_id =
             COALESCE(json_extract(family.payload_json, '$.lineage.rootThreadId'), family.thread_id)
-          WHERE ${rootIsVisible(sql)}`;
+          WHERE ${rootIsVisible(sql, includeSettledAndArchived)}`;
       }
       for (const { name } of tables) {
         if (CLEARED_TABLES.includes(name)) continue;
@@ -312,7 +322,7 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
     SELECT f.root_id, root.project_id, MAX(f.updated_at) AS updated_at
     FROM thread_families f
     JOIN orchestration_v2_projection_threads root ON root.thread_id = f.root_id
-    WHERE ${rootIsVisible(sql)}
+    WHERE ${rootIsVisible(sql, input.includeSettledAndArchived)}
     GROUP BY f.root_id, root.project_id
     HAVING SUM(f.thread_id IN (SELECT thread_id FROM live_threads)) = 0`;
 
@@ -476,7 +486,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   yield* removeDatabaseFiles(snapshotPath);
   const { executedMigrations, pruned } = yield* Effect.gen(function* () {
     yield* Console.log(`Copying visible threads from ${sourcePath} (read-only)...`);
-    yield* copySourceSlice(sourcePath).pipe(
+    yield* copySourceSlice(sourcePath, input.includeSettledAndArchived === true).pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
       wrapPhase("snapshot", sourcePath),
     );

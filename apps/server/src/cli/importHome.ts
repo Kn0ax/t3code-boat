@@ -119,6 +119,7 @@ const importHome = Effect.fn("importHome")(function* (input: {
       source: path.join(sourceState, "statev2.sqlite"),
       projects: KEEP_ALL,
       threadsPerProject: KEEP_ALL,
+      includeSettledAndArchived: true,
     });
   }
 
