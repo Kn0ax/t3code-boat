@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - The fake VM runs the sync and busy scripts in a real shell and git.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -14,6 +15,7 @@ import {
   type SandboxJobSettings,
 } from "@t3tools/contracts";
 import {
+  SANDBOX_STATE_KEY,
   SandboxEnvironmentError,
   SandboxEnvironmentManager,
   type SandboxEnvironmentTarget,
@@ -40,6 +42,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as BoatVmLifecycle from "./BoatVmLifecycle.ts";
+import * as BoatVmManagerAccess from "./BoatVmManagerAccess.ts";
 import * as BoatVmService from "./BoatVmService.ts";
 import * as BoatVmProxy from "./BoatVmProxy.ts";
 
@@ -100,6 +103,10 @@ interface Record {
   readonly written: Array<{ readonly path: string; readonly content: string }>;
   /** The hex port each VM's busy check looks at; the host's own T3 may hold 3773. */
   readonly busyPorts: Map<string, string>;
+  /** Codes minted and ended for VMs to link back here, as "grant:<id>" and "revoke:<id>". */
+  readonly managerAccess: Array<string>;
+  /** The link requests VMs were sent, by sandbox id. */
+  readonly managerLinks: Array<{ readonly sandboxId: string; readonly request: string }>;
   provisionEnv: Readonly<{ [name: string]: string }> | undefined;
 }
 
@@ -132,6 +139,18 @@ const makeProvider = (record: Record, vms: ReadonlyArray<SandboxInfo>): SandboxP
       ) {
         record.tailnetJoins.push({ sandboxId: ref.sandboxId, script: input.script });
         return { exitCode: 0, stdout: `t3-vm-${ref.sandboxId}.tail.ts.net`, stderr: "" };
+      }
+      if (input.script === BoatVmService.VM_MANAGER_LINK_SCRIPT) {
+        const request = NodePath.join(
+          homeOf(ref.sandboxId),
+          `.t3/boat-manager-link-${input.args?.[0] ?? ""}.json`,
+        );
+        record.managerLinks.push({
+          sandboxId: ref.sandboxId,
+          request: NodeFS.readFileSync(request, "utf8"),
+        });
+        NodeFS.rmSync(request);
+        return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (input.script.includes("sudo ")) {
         throw new Error("A test script would run sudo on this machine.");
@@ -218,12 +237,15 @@ const makeHarness = (input: {
   readonly projects?: ReadonlyArray<
     Pick<OrchestrationProjectShell, "workspaceRoot" | "repositoryIdentity"> & {
       readonly id?: ProjectId;
+      readonly title?: string;
     }
   >;
   readonly mirrorThread?: ThreadImportService.ThreadImportService["Service"]["mirrorThread"];
   readonly deleteCopy?: ThreadImportService.ThreadImportService["Service"]["deleteCopy"];
   /** A T3 home that outlives one server, for state kept across restarts. */
   readonly baseDir?: string;
+  /** This server's tailnet origin for VMs to link back to; none when omitted. */
+  readonly managerUrl?: string;
 }) => {
   const record: Record = {
     targets: [],
@@ -236,6 +258,8 @@ const makeHarness = (input: {
     events: [],
     written: [],
     busyPorts: new Map(),
+    managerAccess: [],
+    managerLinks: [],
     resumed: [],
     provisionEnv: undefined,
   };
@@ -306,6 +330,19 @@ const makeHarness = (input: {
       ServerConfig.layerTest(process.cwd(), input.baseDir ?? { prefix: "t3-boat-vm-config-" }),
     ),
     Layer.provide(NodeServices.layer),
+    Layer.provide(
+      Layer.succeed(BoatVmManagerAccess.BoatVmManagerAccess, {
+        grant: (sandboxId) =>
+          Effect.sync(() => {
+            record.managerAccess.push(`grant:${sandboxId}`);
+            return input.managerUrl === undefined
+              ? Option.none()
+              : Option.some({ managerUrl: input.managerUrl, pairingCode: `code-${sandboxId}` });
+          }),
+        revoke: (sandboxId) =>
+          Effect.sync(() => void record.managerAccess.push(`revoke:${sandboxId}`)),
+      }),
+    ),
     Layer.provide(
       Layer.succeed(BoatVmProxy.BoatVmProxy, {
         register: () => Effect.succeed("proxy-token"),
@@ -936,6 +973,49 @@ describe("BoatVmService", () => {
         "export const app = 2;\n",
       );
       assert.isUndefined(second.warning);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("links a VM on the tailnet back here on every launch and resume, by file", () => {
+    const managerUrl = "https://manager.example.test";
+    const { record, layer } = makeHarness({ managerUrl });
+    return Effect.gen(function* () {
+      const vms = yield* BoatVmService.BoatVmService;
+      yield* vms.launch({ repository: repository() });
+      yield* vms.launch({ sandboxId: "old", repository: repository() });
+
+      assert.deepEqual(record.managerAccess, ["grant:new", "grant:old"]);
+      assert.deepEqual(
+        record.managerLinks.map(({ sandboxId, request }) => ({
+          sandboxId,
+          request: JSON.parse(request),
+        })),
+        [
+          { sandboxId: "new", request: { managerUrl, pairingCode: "code-new" } },
+          { sandboxId: "old", request: { managerUrl, pairingCode: "code-old" } },
+        ],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not link a VM reached only over the Boat relay", () => {
+    const { record, layer } = makeHarness({
+      managerUrl: "https://manager.example.test",
+      settings: { tailscaleAuthKey: "", boatVmConnectionMode: "boat" },
+    });
+    return Effect.gen(function* () {
+      yield* (yield* BoatVmService.BoatVmService).launch({ repository: repository() });
+      assert.deepEqual(record.managerAccess, []);
+      assert.deepEqual(record.managerLinks, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("launches without the link when this server has no tailnet origin", () => {
+    const { record, layer } = makeHarness({});
+    return Effect.gen(function* () {
+      yield* (yield* BoatVmService.BoatVmService).launch({ repository: repository() });
+      assert.deepEqual(record.managerAccess, ["grant:new"]);
+      assert.deepEqual(record.managerLinks, []);
     }).pipe(Effect.provide(layer));
   });
 
@@ -1831,8 +1911,8 @@ describe("boat VM lifecycle", () => {
     const { record, layer } = makeLifecycleHarness({
       contents,
       vms: [running("vm1")],
-      // No project here has the repository, so t1 is never mirrored.
-      projects: [],
+      // The copy never lands, so t1 is never mirrored.
+      mirrorThread: () => Effect.fail(writeFailed),
       deleteCopy: () => Effect.die("A thread never mirrored has no copy"),
     });
     return Effect.gen(function* () {
@@ -2012,6 +2092,44 @@ describe("boat VM lifecycle", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("mirrors a thread of a repository no project here checks out into scratch", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      projects: [],
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      contents.set("vm1", { threads: [], archived: ["t1"] });
+      yield* pass;
+      assert.deepEqual(record.events, [
+        mirrored("vm1", "t1", "home-scratch"),
+        mirrored("vm1", "t1", "home-scratch"),
+        "destroy:vm1",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("ends a VM's link back here when it deletes the VM", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({ contents, vms: [running("vm1")] });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      assert.deepEqual(record.managerAccess, []);
+      contents.set("vm1", { threads: [], archived: ["t1"] });
+      yield* pass;
+      assert.include(record.events, "destroy:vm1");
+      assert.deepEqual(record.managerAccess, ["revoke:vm1"]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("leaves a VM the user just resumed running for the idle window", () => {
     const contents = new Map<string, VmContents>([
       ["vm1", { threads: [vmThread("t1", { snoozedUntil: minutesAgo(-60) })], archived: [] }],
@@ -2028,6 +2146,261 @@ describe("boat VM lifecycle", () => {
       yield* TestClock.adjust("31 minutes");
       yield* vms.keepAlive;
       assert.deepEqual(record.stopped, ["vm1"]);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+/**
+ * The VM's T3 on loopback: MCP sign-in with a pairing code, then the project
+ * and thread tools, answering tools/call as server-sent events like the real
+ * server does when a response carries more than one message.
+ */
+const startFakeVmT3 = (launchFailure?: string) =>
+  Effect.acquireRelease(
+    Effect.promise(
+      () =>
+        new Promise<{
+          readonly server: NodeHttp.Server;
+          readonly port: number;
+          readonly decisions: Array<unknown>;
+          readonly calls: Array<{ readonly name: string; readonly arguments: unknown }>;
+        }>((resolve) => {
+          const decisions: Array<unknown> = [];
+          const calls: Array<{ readonly name: string; readonly arguments: unknown }> = [];
+          const server = NodeHttp.createServer((request, response) => {
+            let body = "";
+            request.on("data", (chunk) => (body += chunk));
+            request.on("end", () => {
+              const json = (status: number, value: unknown, headers = {}) => {
+                response.writeHead(status, { "content-type": "application/json", ...headers });
+                response.end(JSON.stringify(value));
+              };
+              switch (request.url) {
+                case "/.well-known/oauth-protected-resource/mcp":
+                  return json(200, { resource: `http://127.0.0.1:${port}/mcp` });
+                case "/oauth/mcp/register":
+                  return json(200, { client_id: "client" });
+                case "/oauth/mcp/decision":
+                  decisions.push(JSON.parse(body).decision);
+                  return json(200, {
+                    redirectTo: "http://127.0.0.1/t3-boat-vm-thread?code=granted",
+                  });
+                case "/oauth/mcp/token":
+                  return new URLSearchParams(body).get("code") === "granted"
+                    ? json(200, { access_token: "vm-token", token_type: "Bearer" })
+                    : json(400, {});
+              }
+              if (request.headers.authorization !== "Bearer vm-token") return json(401, {});
+              const message = JSON.parse(body);
+              if (message.method === "initialize") {
+                return json(
+                  200,
+                  { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18" } },
+                  { "mcp-session-id": "session" },
+                );
+              }
+              if (message.id === undefined) {
+                response.writeHead(202).end();
+                return;
+              }
+              const { name, arguments: args } = message.params;
+              calls.push({ name, arguments: args });
+              const result =
+                name === "t3_project_list"
+                  ? { structuredContent: { projects: [], nextCursor: null } }
+                  : name === "t3_project_create"
+                    ? { structuredContent: { id: "vm-project" } }
+                    : launchFailure !== undefined
+                      ? {
+                          isError: true,
+                          structuredContent: { code: "invalid_request", message: launchFailure },
+                        }
+                      : {
+                          structuredContent: {
+                            threadId: "vm-thread",
+                            projectId: args.projectId ?? "vm-scratch",
+                          },
+                        };
+              response.writeHead(200, { "content-type": "text/event-stream" });
+              response.end(
+                `data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`,
+              );
+            });
+          });
+          let port = 0;
+          server.listen(0, "127.0.0.1", () => {
+            port = (server.address() as NodeNet.AddressInfo).port;
+            resolve({ server, port, decisions, calls });
+          });
+        }),
+    ),
+    ({ server }) => Effect.promise(() => new Promise<void>((done) => server.close(() => done()))),
+  );
+
+/** Runs the thread launch script for real, in the background so the fake T3 can answer it. */
+const withVmT3 = (port: number) => (provider: SandboxProviderShape) => ({
+  ...provider,
+  exec: (ref: SandboxRef, command: Parameters<SandboxProviderShape["exec"]>[1]) => {
+    if (command.script !== BoatVmService.VM_THREAD_LAUNCH_SCRIPT) {
+      return provider.exec(ref, command);
+    }
+    const home = homeOf(ref.sandboxId);
+    const stateDir = NodePath.join(home, ".t3", "ssh-launch", SANDBOX_STATE_KEY);
+    NodeFS.mkdirSync(stateDir, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(stateDir, "port"), String(port));
+    return Effect.promise(
+      () =>
+        new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => {
+          const child = NodeChildProcess.spawn("sh", ["-s", ...(command.args ?? [])], {
+            env: { ...gitEnv, HOME: home },
+          });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (chunk) => (stdout += chunk));
+          child.stderr.on("data", (chunk) => (stderr += chunk));
+          child.on("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+          child.stdin.end(command.script);
+        }),
+    );
+  },
+});
+
+describe("boat VM thread launch", () => {
+  const hostProjectId = ProjectId.make("host-app");
+  const hostProject = () => ({
+    id: hostProjectId,
+    title: "app",
+    workspaceRoot: "/home/app",
+    repositoryIdentity: {
+      canonicalKey: normalizeGitRemoteUrl(remote),
+      locator: { source: "git-remote" as const, remoteName: "origin", remoteUrl: remote },
+      owner: "Acme",
+      name: "app",
+    },
+  });
+
+  it.effect("checks out the project on a new VM and starts the thread in its project there", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const vmT3 = yield* startFakeVmT3();
+        const { record, layer } = makeHarness({
+          projects: [hostProject()],
+          provider: withVmT3(vmT3.port),
+        });
+        const started = yield* BoatVmService.BoatVmService.use((vms) =>
+          vms.launchThread({
+            projectId: hostProjectId,
+            title: "Fix the build",
+            message: "Make the tests pass",
+            runtimeMode: "approval-required",
+          }),
+        ).pipe(Effect.provide(layer));
+
+        assert.deepEqual(started, {
+          sandboxId: "new",
+          label: "Acme/app",
+          threadId: ThreadId.make("vm-thread"),
+          projectId: ProjectId.make("vm-project"),
+        });
+        assert.equal(record.targets[0]!.label, "vm Acme/app");
+        const checkout = NodePath.join(homeOf("new"), "work", "app");
+        assert.equal(git(checkout, ["rev-parse", "HEAD"]), git(remote, ["rev-parse", "HEAD"]));
+        assert.deepEqual(vmT3.decisions, [
+          { _tag: "pairing-code", access: "full-access", code: "pair-new" },
+        ]);
+        assert.deepEqual(vmT3.calls, [
+          { name: "t3_project_list", arguments: { cursor: 0, limit: 100 } },
+          {
+            name: "t3_project_create",
+            arguments: {
+              title: "app",
+              workspaceRoot: checkout,
+              createWorkspaceRootIfMissing: false,
+            },
+          },
+          {
+            name: "t3_thread_launch",
+            arguments: {
+              title: "Fix the build",
+              message: "Make the tests pass",
+              runtimeMode: "approval-required",
+              projectId: "vm-project",
+            },
+          },
+        ]);
+        // The request carried the pairing code, so it must not outlive the launch.
+        assert.deepEqual(
+          NodeFS.readdirSync(NodePath.join(homeOf("new"), ".t3")).filter((name) =>
+            name.startsWith("boat-thread-launch-"),
+          ),
+          [],
+        );
+      }),
+    ),
+  );
+
+  it.effect("starts a thread without a project in the VM's Scratch and reports a refusal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const vmT3 = yield* startFakeVmT3("No model is configured.");
+        const { layer } = makeHarness({ provider: withVmT3(vmT3.port) });
+        const error = yield* BoatVmService.BoatVmService.use((vms) =>
+          vms.launchThread({ projectId: null, title: "Explore", message: "Look around" }),
+        ).pipe(Effect.provide(layer), Effect.flip);
+
+        assert.equal(
+          error.message,
+          "scratch (new) is running, but its t3_thread_launch refused: No model is configured.",
+        );
+        assert.deepEqual(vmT3.calls, [
+          {
+            name: "t3_thread_launch",
+            arguments: { title: "Explore", message: "Look around", scratch: true },
+          },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("checks out a repository a linked server sends, without a project here", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const vmT3 = yield* startFakeVmT3();
+        const { record, layer } = makeHarness({ provider: withVmT3(vmT3.port) });
+        const started = yield* BoatVmService.BoatVmService.use((vms) =>
+          vms.launchThread({
+            projectId: null,
+            repository: repository(),
+            title: "Fix the build",
+            message: "Make the tests pass",
+          }),
+        ).pipe(Effect.provide(layer));
+
+        assert.equal(started.projectId, ProjectId.make("vm-project"));
+        assert.equal(record.targets[0]!.label, "vm Acme/app");
+        const checkout = NodePath.join(homeOf("new"), "work", "app");
+        assert.equal(git(checkout, ["rev-parse", "HEAD"]), git(remote, ["rev-parse", "HEAD"]));
+        assert.deepEqual(
+          vmT3.calls.map((call) => call.name),
+          ["t3_project_list", "t3_project_create", "t3_thread_launch"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses a project without a repository remote before starting a VM", () => {
+    const { record, layer } = makeHarness({
+      projects: [{ ...hostProject(), title: "Notes", repositoryIdentity: null }],
+    });
+    return Effect.gen(function* () {
+      const error = yield* BoatVmService.BoatVmService.use((vms) =>
+        vms.launchThread({ projectId: hostProjectId, title: "Notes", message: "Tidy up" }),
+      ).pipe(Effect.flip);
+      assert.equal(
+        error.message,
+        "Notes has no repository remote, so a boat VM cannot check it out.",
+      );
+      assert.deepEqual(record.targets, []);
     }).pipe(Effect.provide(layer));
   });
 });

@@ -67,6 +67,7 @@ import {
   resolveResourceMonitorRustTargets,
   resolveWindowsServerAsarIgnoreGlobs,
   resourceMonitorExecutableName,
+  resolveGitHubPublishConfig,
   resolveMockUpdateServerPort,
   resolveMockUpdateServerUrl,
   resolvePackageManagerUserAgent,
@@ -567,8 +568,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
 
-  it.effect("never writes a GitHub update feed, even on CI", () =>
+  it.effect("resolves GitHub desktop publish config from Effect config", () =>
     Effect.gen(function* () {
+      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
+              },
+            }),
+          ),
+        ),
+      );
+      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "pingdotgg/t3code",
+              },
+            }),
+          ),
+        ),
+      );
+
+      assert.deepStrictEqual(latestConfig, {
+        provider: "github",
+        owner: "pingdotgg",
+        repo: "t3code",
+        releaseType: "release",
+      });
+      assert.deepStrictEqual(nightlyConfig, {
+        provider: "github",
+        owner: "pingdotgg",
+        repo: "t3code",
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
+    }),
+  );
+
+  it.effect("omits update feeds for pull request preview builds", () =>
+    Effect.gen(function* () {
+      const preview = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.33-pr.8182.1",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
       const release = yield* createBuildConfig(
         "mac",
         "dmg",
@@ -578,16 +629,31 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
         undefined,
       );
-      const mock = yield* createBuildConfig("mac", "dmg", "0.0.33", false, true, 4141, undefined);
 
-      assert.isNull(release.publish);
-      assert.deepStrictEqual(mock.publish, [{ provider: "generic", url: "http://localhost:4141" }]);
+      const previewChannel = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.41-preview.20260912.1589",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      assert.isNull(preview.publish);
+      assert.isNull(previewChannel.publish);
+      assert.deepStrictEqual(release.publish, [
+        {
+          provider: "github",
+          owner: "pingdotgg",
+          repo: "t3code",
+          releaseType: "release",
+        },
+      ]);
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: { GITHUB_REPOSITORY: "pingdotgg/t3code", T3CODE_DESKTOP_UPDATE_REPOSITORY: "x/y" },
-          }),
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
         ),
       ),
     ),

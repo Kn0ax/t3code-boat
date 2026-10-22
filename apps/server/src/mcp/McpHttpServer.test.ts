@@ -1,5 +1,6 @@
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -1175,6 +1176,104 @@ it.effect("admits provider and OAuth client credentials and points only clients 
       const deadProvider = yield* call("deadProviderToken");
       expect(deadProvider.status).toBe(401);
       expect(deadProvider.headers["www-authenticate"]).toBe('Bearer error="invalid_token"');
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("lets a boat VM client call only the boat VM tools", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const clientToken = "boat-payload.boat-signature";
+      const boatScope: McpInvocationContext.McpInvocationScope = {
+        environmentId,
+        requestNamespace: "client:boat-session",
+        thread: undefined,
+        client: { sessionId: "boat-session", label: "Boat VM vm-1", access: "boat-vms" },
+        capabilities: new Set(),
+        issuedAt: 1,
+      };
+      const ran: Array<string> = [];
+      const dependencies = [
+        McpInvocationContext.McpInvocationContext,
+        ThreadManagementService.ThreadManagementService,
+      ];
+      const probe = (name: string) =>
+        Tool.make(name, {
+          description: "Reports that it ran.",
+          success: Schema.Struct({ ok: Schema.Boolean }),
+          failure: OrchestratorMcpFailure,
+          failureMode: "return",
+          dependencies,
+        });
+      const ProbeToolkit = Toolkit.make(
+        probe("boat_vm_list"),
+        probe("boat_vm_save_snapshot"),
+        probe("t3_project_list"),
+      );
+      const runs = (name: string) =>
+        Effect.sync(() => ran.push(name)).pipe(Effect.as({ ok: true }));
+      const serverLayer = McpHttpServer.toolkitRegistration(
+        ProbeToolkit,
+        McpToolAccess.toLayer(ProbeToolkit, {
+          boat_vm_list: McpToolAccess.boatVmTool("reads", () => runs("boat_vm_list")),
+          boat_vm_save_snapshot: McpToolAccess.boatVmTool("writesEnvironment", () =>
+            runs("boat_vm_save_snapshot"),
+          ),
+          t3_project_list: McpToolAccess.reads(() => runs("t3_project_list")),
+        }),
+      ).pipe(
+        Layer.provideMerge(McpHttpServer.layerMcpTransport),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            resolve: () => Effect.succeed(undefined),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(McpHttpServer.McpClientAuthenticator, {
+            authenticate: (request) =>
+              Effect.succeed(
+                request.headers.authorization === `Bearer ${clientToken}` ? boatScope : undefined,
+              ),
+          }),
+        ),
+        Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+      );
+      yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
+        Layer.build,
+      );
+      const httpClient = yield* HttpClient.HttpClient;
+      const headers = {
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${clientToken}`,
+      };
+      const initialize = yield* httpClient.post("/mcp", {
+        headers,
+        body: HttpBody.text(
+          `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}`,
+          "application/json",
+        ),
+      });
+      const call = (name: string) =>
+        httpClient
+          .post("/mcp", {
+            headers: {
+              ...headers,
+              "mcp-session-id": initialize.headers["mcp-session-id"]!,
+              "mcp-protocol-version": "2025-06-18",
+            },
+            body: HttpBody.text(
+              `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"${name}","arguments":{}}}`,
+              "application/json",
+            ),
+          })
+          .pipe(Effect.flatMap((response) => response.text));
+
+      expect(yield* call("boat_vm_list")).not.toContain('"isError":true');
+      expect(yield* call("boat_vm_save_snapshot")).not.toContain('"isError":true');
+      const refused = yield* call("t3_project_list");
+      expect(refused).toContain('"isError":true');
+      expect(refused).toContain("only use the boat VM tools");
+      expect(ran).toEqual(["boat_vm_list", "boat_vm_save_snapshot"]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

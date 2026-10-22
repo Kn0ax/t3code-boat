@@ -448,11 +448,26 @@ key for them. Start, send, complete and discard need a full-access caller. When
 a run ends, the starting thread gets a queued message with its result. See
 [cloud sandboxes](../internals/cloud-sandboxes.md#sandbox-jobs).
 
-`boat_vm_list`, `boat_vm_bring_home` and `boat_vm_save_snapshot` reach the boat
-VMs this environment made. Listing describes how the server stops and deletes
-VMs as their threads are snoozed, archived, settled or deleted. Bringing work
-home and saving a snapshot need a full-access caller. Starting a VM stays in the
-client, which pairs with the new environment.
+`boat_vm_list`, `boat_vm_thread_launch`, `boat_vm_bring_home` and
+`boat_vm_save_snapshot` reach the boat VMs this environment made. Listing
+describes how the server stops and deletes VMs as their threads are snoozed,
+archived, settled or deleted. `boat_vm_thread_launch` starts or resumes a VM and
+starts a thread in the VM's own T3: inside the VM it signs in to that T3's MCP
+over loopback with the launch's one-time pairing code and calls
+`t3_thread_launch`, so this server needs no route to the VM. Launching a thread,
+bringing work home and saving a snapshot need a full-access caller.
+
+A server without a boat key that is linked to one with a key (`sandboxJobs.boatManager`)
+forwards these tools to that server's `/mcp` as an MCP client, signed in with a
+pairing code like sandbox jobs sign in to a node. A thread launch sends the
+project's repository instead of the local project id, and bring home is refused
+because it would fetch into the other server's checkout.
+
+A boat VM the manager launched on the tailnet links back the same way, with a
+session that may call only `boat_vm_list`, `boat_vm_thread_launch` (by
+`repository` or `scratch`, never `projectId`) and `boat_vm_save_snapshot`;
+every other tool refuses it. See
+[cloud sandboxes](../internals/cloud-sandboxes.md#boat-manager-link).
 
 ## Delegated Task Lifecycle
 

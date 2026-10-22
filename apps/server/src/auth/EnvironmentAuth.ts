@@ -1,6 +1,7 @@
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
+  AuthBoatVmsOperateScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
@@ -76,25 +77,33 @@ export interface IssuedBearerSession {
  */
 const MCP_CLIENT_SUBJECT = "mcp-client";
 const MCP_CLIENT_SESSION_TTL = Duration.days(30);
+/** A boat VM's session is minted again on every launch or resume of the VM. */
+const BOAT_VM_CLIENT_SESSION_TTL = Duration.hours(24);
 
-export const mcpClientScopes = (
-  access: AuthMcpClientAccess,
-): ReadonlyArray<AuthEnvironmentScope> =>
-  access === "read-only"
-    ? [AuthOrchestrationReadScope]
-    : access === "full-access"
-      ? [
-          AuthOrchestrationReadScope,
-          AuthOrchestrationOperateScope,
-          AuthSettingsWriteScope,
-          AuthSourceControlWriteScope,
-        ]
-      : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
+/**
+ * "boat-vms" reaches only the boat VM tools. No one picks it: a pairing code
+ * holding the boat VM scope approves it whatever access the client asked for.
+ */
+export type McpClientAccess = AuthMcpClientAccess | "boat-vms";
+
+export const mcpClientScopes = (access: McpClientAccess): ReadonlyArray<AuthEnvironmentScope> =>
+  access === "boat-vms"
+    ? [AuthBoatVmsOperateScope]
+    : access === "read-only"
+      ? [AuthOrchestrationReadScope]
+      : access === "full-access"
+        ? [
+            AuthOrchestrationReadScope,
+            AuthOrchestrationOperateScope,
+            AuthSettingsWriteScope,
+            AuthSourceControlWriteScope,
+          ]
+        : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
 
 export interface McpClientSession {
   readonly sessionId: AuthSessionId;
   readonly label: string;
-  readonly access: AuthMcpClientAccess;
+  readonly access: McpClientAccess;
 }
 
 export interface AuthenticatedSession {
@@ -555,7 +564,7 @@ export class EnvironmentAuth extends Context.Service<
     ) => Effect.Effect<McpClientSession, ServerAuthCredentialError | ServerAuthInternalError>;
     readonly issueMcpClientSession: (input: {
       readonly label: string;
-      readonly access: AuthMcpClientAccess;
+      readonly access: McpClientAccess;
       readonly client: AuthClientMetadata;
     }) => Effect.Effect<
       { readonly token: string; readonly expiresAt: DateTime.DateTime },
@@ -563,14 +572,18 @@ export class EnvironmentAuth extends Context.Service<
     >;
     /**
      * Spends a one-time pairing code as approval for an MCP client with the
-     * given access; the code must hold every scope that access grants.
-     * Proof-bound codes (T3 Connect) are refused without being spent, and
-     * desktop bootstrap grants never qualify.
+     * given access; the code must hold every scope that access grants. A code
+     * with the boat VM scope approves "boat-vms" instead, under the code's
+     * label. Proof-bound codes (T3 Connect) are refused without being spent,
+     * and desktop bootstrap grants never qualify.
      */
     readonly consumeMcpApprovalCode: (
       code: string,
       access: AuthMcpClientAccess,
-    ) => Effect.Effect<void, ServerAuthMcpApprovalCodeError | ServerAuthInternalError>;
+    ) => Effect.Effect<
+      { readonly access: McpClientAccess; readonly label?: string },
+      ServerAuthMcpApprovalCodeError | ServerAuthInternalError
+    >;
     readonly authenticateBrowserSession: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
@@ -1269,7 +1282,9 @@ export const make = Effect.gen(function* () {
               label: session.client.label ?? "MCP client",
               access: session.scopes.includes(AuthOrchestrationOperateScope)
                 ? (session.runtimeModeCeiling ?? "approval-required")
-                : "read-only",
+                : session.scopes.includes(AuthBoatVmsOperateScope)
+                  ? "boat-vms"
+                  : "read-only",
             } satisfies McpClientSession)
           : Effect.fail(
               new ServerAuthInvalidCredentialError({
@@ -1287,8 +1302,10 @@ export const make = Effect.gen(function* () {
         subject: MCP_CLIENT_SUBJECT,
         method: "bearer-access-token",
         scopes: mcpClientScopes(input.access),
-        ttl: MCP_CLIENT_SESSION_TTL,
-        ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
+        ttl: input.access === "boat-vms" ? BOAT_VM_CLIENT_SESSION_TTL : MCP_CLIENT_SESSION_TTL,
+        ...(input.access === "read-only" || input.access === "boat-vms"
+          ? {}
+          : { runtimeModeCeiling: input.access }),
         client: { ...input.client, label: input.label, deviceType: "bot" },
       })
       .pipe(
@@ -1324,12 +1341,29 @@ export const make = Effect.gen(function* () {
         ServerAuthScopeNotGrantedError: () =>
           Effect.fail(new ServerAuthMcpApprovalCodeError({ reason: "insufficient_scope" })),
       }),
-      Effect.flatMap((grant) =>
-        grant.method !== "one-time-token" && grant.method !== "reusable-dev-token"
-          ? Effect.fail(new ServerAuthMcpApprovalCodeError({ reason: "not_a_pairing_code" }))
-          : mcpClientScopes(access).every((scope) => grant.scopes.includes(scope))
-            ? Effect.void
-            : Effect.fail(new ServerAuthMcpApprovalCodeError({ reason: "insufficient_scope" })),
+      Effect.flatMap(
+        (
+          grant,
+        ): Effect.Effect<
+          { readonly access: McpClientAccess; readonly label?: string },
+          ServerAuthMcpApprovalCodeError
+        > => {
+          if (grant.method !== "one-time-token" && grant.method !== "reusable-dev-token") {
+            return Effect.fail(
+              new ServerAuthMcpApprovalCodeError({ reason: "not_a_pairing_code" }),
+            );
+          }
+          if (grant.scopes.includes(AuthBoatVmsOperateScope)) {
+            return Effect.succeed(
+              grant.label === undefined
+                ? { access: "boat-vms" }
+                : { access: "boat-vms", label: grant.label },
+            );
+          }
+          return mcpClientScopes(access).every((scope) => grant.scopes.includes(scope))
+            ? Effect.succeed({ access })
+            : Effect.fail(new ServerAuthMcpApprovalCodeError({ reason: "insufficient_scope" }));
+        },
       ),
       Effect.withSpan("EnvironmentAuth.consumeMcpApprovalCode"),
     );

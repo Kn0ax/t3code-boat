@@ -961,6 +961,42 @@ const withToolAnalytics =
   });
 
 /**
+ * Refuses a client the tools its approval does not reach, in front of every
+ * registered tool, so a new toolkit cannot forget the check.
+ */
+const withClientToolGate =
+  /* Request instrumentation already owns the span; keep this helper in that context. */
+  Effect.fnUntraced(function* <A, E, R>(registration: Effect.Effect<A, E, R>) {
+    const server = yield* McpServer.McpServer;
+    const gatedServer = McpServer.McpServer.of({
+      ...server,
+      addTool: (options) =>
+        server.addTool({
+          ...options,
+          handle: (payload) =>
+            Effect.serviceOption(McpInvocationContext.McpInvocationContext).pipe(
+              Effect.flatMap((scope) =>
+                McpToolAccess.clientMayCall(Option.getOrUndefined(scope), options.tool.name)
+                  ? options.handle(payload)
+                  : Effect.succeed(
+                      new McpSchema.CallToolResult({
+                        isError: true,
+                        content: [
+                          {
+                            type: "text",
+                            text: `This MCP client may only use the boat VM tools, not ${options.tool.name}.`,
+                          },
+                        ],
+                      }),
+                    ),
+              ),
+            ),
+        }),
+    });
+    return yield* registration.pipe(Effect.provideService(McpServer.McpServer, gatedServer));
+  });
+
+/**
  * `McpServer.toolkit` asks for every service its tools declare when it
  * registers them, but the auth middleware provides `McpInvocationContext` to
  * each request instead. Registration must not get one: the services it
@@ -971,7 +1007,7 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) => {
   const registration = Layer.effectDiscard(
-    withToolAnalytics(McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+    withClientToolGate(withToolAnalytics(McpServer.registerToolkit(decodeAsAdvertised(toolkit)))),
   ).pipe(Layer.provide(McpServer.McpServer.layer));
   // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off - the auth middleware provides it per request.
   const registered = registration as Layer.Layer<
@@ -986,7 +1022,7 @@ const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, 
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
-  Layer.effectDiscard(withToolAnalytics(register)).pipe(
+  Layer.effectDiscard(withClientToolGate(withToolAnalytics(register))).pipe(
     Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
   );
 

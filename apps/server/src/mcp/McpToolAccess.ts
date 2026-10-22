@@ -214,6 +214,48 @@ export const writesEnvironment = <P, A, E, R>(
 
 type CheckServices = Effect.Services<typeof orchestratingCaller>;
 
+/**
+ * The only tools a "boat-vms" client (a boat VM this server launched, linked
+ * back to it) may call; McpHttpServer refuses it every other tool before its
+ * handler runs.
+ */
+const BOAT_VM_CLIENT_TOOLS: ReadonlySet<string> = new Set([
+  "boat_vm_list",
+  "boat_vm_thread_launch",
+  "boat_vm_save_snapshot",
+]);
+
+export const clientMayCall = (
+  scope: McpInvocationContext.McpInvocationScope | undefined,
+  tool: string,
+): boolean => scope?.client?.access !== "boat-vms" || BOAT_VM_CLIENT_TOOLS.has(tool);
+
+/**
+ * A boat VM tool, which a "boat-vms" client may call with no caller (no
+ * thread, project, or modes); any other caller needs `access`: a reader of
+ * threads, or a full-access caller as for `writesEnvironment`.
+ */
+export const boatVmTool = <P, A, E, R>(
+  access: "reads" | "writesEnvironment",
+  handle: (params: P, caller: Caller | undefined) => Effect.Effect<A, E, R>,
+) => {
+  const check =
+    access === "reads"
+      ? readCaller()
+      : orchestratingCaller.pipe(
+          Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
+        );
+  return declare((params: P) =>
+    McpInvocationContext.McpInvocationContext.pipe(
+      Effect.flatMap((scope) =>
+        scope.client?.access === "boat-vms"
+          ? handle(params, undefined)
+          : check.pipe(Effect.flatMap((caller) => handle(params, caller))),
+      ),
+    ),
+  );
+};
+
 type Declarations<Handlers> = {
   readonly [Name in keyof Handlers]: Declaration<Handlers[Name]> & NotCallable;
 };

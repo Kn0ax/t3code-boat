@@ -60,6 +60,8 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
+import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -233,6 +235,36 @@ export const sandboxT3Version = (hostVersion: string): string =>
     ? hostVersion
     : SANDBOX_NODE_T3_VERSION;
 
+/** The release nodes and VMs install instead, for builds that publish their own archives. */
+export const SANDBOX_T3_VERSION_ENV = "T3CODE_SANDBOX_T3_VERSION";
+
+const optionalEnv = (name: string) =>
+  Config.String(name).pipe(
+    Config.option,
+    Config.map((value) =>
+      Option.getOrUndefined(
+        Option.filter(
+          Option.map(value, (text) => text.trim()),
+          Boolean,
+        ),
+      ),
+    ),
+  );
+
+/**
+ * The release nodes and VMs install and where it is downloaded from. A fork
+ * sets both variables to its own published archives, since its version
+ * names an upstream release with different code.
+ */
+export const sandboxT3Release = Effect.gen(function* () {
+  const version = yield* optionalEnv(SANDBOX_T3_VERSION_ENV);
+  const releaseBaseUrl = yield* optionalEnv(CLI_RELEASE_BASE_URL_ENV);
+  return {
+    t3Version: version ?? sandboxT3Version(packageJson.version),
+    managerOptions: releaseBaseUrl === undefined ? {} : { releaseBaseUrl },
+  };
+});
+
 export interface SandboxJobServiceOptions {
   readonly resolveProvider?: SandboxJobProviderResolver;
   /** The t3 release nodes install. Defaults to `sandboxT3Version` of this server. */
@@ -255,7 +287,7 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const scope = yield* Effect.scope;
-  const t3Version = options.t3Version ?? sandboxT3Version(packageJson.version);
+  const t3Version = options.t3Version ?? (yield* sandboxT3Release).t3Version;
 
   const withGit = <A, E>(
     effect: Effect.Effect<
@@ -359,7 +391,7 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
     bootstrap: SandboxEnvironmentBootstrap,
   ) {
     const endpoint = { httpBaseUrl: bootstrap.httpBaseUrl, headers: bootstrap.requestHeaders };
-    const token = yield* nodeMcp.signIn(endpoint, bootstrap.pairingToken);
+    const { token } = yield* nodeMcp.signIn(endpoint, bootstrap.pairingToken);
     yield* saveToken(jobId, token);
     const connection: NodeConnection = { endpoint, token };
     yield* SynchronizedRef.update(connections, (current) =>
@@ -1441,12 +1473,16 @@ export const make = Effect.fn("SandboxJobService.make")(function* (
 });
 
 export const layer = (options: SandboxJobServiceOptions = {}) =>
-  Layer.effect(SandboxJobService, make(options)).pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        SandboxJobStore.layer,
-        SandboxNodeMcp.layer,
-        SandboxEnvironmentManager.layer(),
+  Layer.unwrap(
+    Effect.map(sandboxT3Release, ({ managerOptions }) =>
+      Layer.effect(SandboxJobService, make(options)).pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            SandboxJobStore.layer,
+            SandboxNodeMcp.layer,
+            SandboxEnvironmentManager.layer(managerOptions),
+          ),
+        ),
       ),
     ),
   );

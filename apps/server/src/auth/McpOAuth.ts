@@ -9,7 +9,6 @@ import {
   AuthMcpTokenError,
   type AuthMcpTokenRequest,
   type AuthMcpTokenResult,
-  type AuthMcpClientAccess,
   type AuthEnvironmentScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -182,7 +181,9 @@ interface PendingCode {
   readonly redirectUri: string;
   readonly codeChallenge: string;
   readonly resource: string;
-  readonly access: AuthMcpClientAccess;
+  readonly access: EnvironmentAuth.McpClientAccess;
+  /** Replaces the client's own name, for a session the server named. */
+  readonly label: string | undefined;
   readonly expiresAtMs: number;
 }
 
@@ -384,7 +385,8 @@ const make = Effect.gen(function* () {
 
   const mintCode = Effect.fn("McpOAuth.mintCode")(function* (
     authorization: AuthorizationRequest,
-    access: AuthMcpClientAccess,
+    access: EnvironmentAuth.McpClientAccess,
+    label: string | undefined,
   ) {
     const now = yield* Clock.currentTimeMillis;
     const code = Buffer.from(yield* crypto.randomBytes(32).pipe(Effect.orDie)).toString(
@@ -399,6 +401,7 @@ const make = Effect.gen(function* () {
         codeChallenge: authorization.codeChallenge,
         resource: authorization.resource,
         access,
+        label,
         expiresAtMs: now + AUTHORIZATION_CODE_TTL_MS,
       });
       return next;
@@ -408,8 +411,11 @@ const make = Effect.gen(function* () {
 
   const approve: McpOAuth["Service"]["approve"] = Effect.fn("McpOAuth.approve")(function* (input) {
     const { decision } = input;
+    let granted: { readonly access: EnvironmentAuth.McpClientAccess; readonly label?: string } = {
+      access: decision.access,
+    };
     if (decision._tag === "pairing-code") {
-      yield* environmentAuth.consumeMcpApprovalCode(decision.code, decision.access).pipe(
+      granted = yield* environmentAuth.consumeMcpApprovalCode(decision.code, decision.access).pipe(
         Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (cause) =>
           Effect.logError("MCP approval code check failed.", { cause }).pipe(
             Effect.andThen(
@@ -436,10 +442,10 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    const code = yield* mintCode(input.authorization, decision.access);
+    const code = yield* mintCode(input.authorization, granted.access, granted.label);
     yield* Effect.logInfo("Approved an MCP client sign-in.", {
       client: input.authorization.client.name,
-      access: decision.access,
+      access: granted.access,
       method: decision._tag,
     });
     return redirectWith(input.authorization.redirectUri, {
@@ -496,7 +502,7 @@ const make = Effect.gen(function* () {
       }
       const issued = yield* environmentAuth
         .issueMcpClientSession({
-          label: pending.clientName,
+          label: pending.label ?? pending.clientName,
           access: pending.access,
           client: deriveAuthClientMetadata({ request }),
         })
@@ -550,11 +556,12 @@ export const layerMcpClientAuthenticator = Layer.effect(
                   label: client.label,
                   access: client.access,
                 },
-                capabilities: new Set<McpInvocationContext.McpCapability>([
-                  "orchestration",
-                  "worktree",
-                  "pull-requests",
-                ]),
+                // A boat VM client reaches only the boat VM tools, which need none.
+                capabilities: new Set<McpInvocationContext.McpCapability>(
+                  client.access === "boat-vms"
+                    ? []
+                    : ["orchestration", "worktree", "pull-requests"],
+                ),
                 issuedAt,
               })),
             ),

@@ -1,5 +1,4 @@
 import {
-  type AuthMcpClientAccess,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -10,6 +9,8 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+
+import type { McpClientAccess } from "../auth/EnvironmentAuth.ts";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
@@ -29,15 +30,17 @@ export interface McpThreadCaller {
 export interface McpClientCaller {
   readonly sessionId: string;
   readonly label: string;
-  readonly access: AuthMcpClientAccess;
+  readonly access: McpClientAccess;
 }
 
 /**
- * A read-only client never reaches a write (`McpToolAccess` refuses it first),
- * so it maps to the lowest mode rather than to nothing.
+ * A read-only or boat VM client never reaches a write (`McpToolAccess` refuses
+ * it first), so it maps to the lowest mode rather than to nothing.
  */
 export const clientRuntimeModeCeiling = (client: McpClientCaller | undefined): RuntimeMode =>
-  client === undefined || client.access === "read-only" ? "approval-required" : client.access;
+  client === undefined || client.access === "read-only" || client.access === "boat-vms"
+    ? "approval-required"
+    : client.access;
 
 /**
  * A thread caller's omitted target falls back to its own thread; a client

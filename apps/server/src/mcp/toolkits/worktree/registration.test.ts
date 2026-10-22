@@ -35,6 +35,7 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
+import * as BoatManagerLink from "../../../sandbox/BoatManagerLink.ts";
 import * as BoatVmService from "../../../sandbox/BoatVmService.ts";
 import * as SandboxJobService from "../../../sandbox/SandboxJobService.ts";
 
@@ -63,6 +64,7 @@ const layerStubServices = Layer.mergeAll(
   McpProviderSessions.layer,
   Layer.mock(SandboxJobService.SandboxJobService)({}),
   Layer.mock(BoatVmService.BoatVmService)({}),
+  Layer.mock(BoatManagerLink.BoatManagerLink)({}),
 );
 
 const ToolsListPayload = Schema.fromJsonString(

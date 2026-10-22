@@ -4,6 +4,7 @@ import {
   SandboxJobSize,
   type ServerSettings,
 } from "@t3tools/contracts";
+import { useState } from "react";
 
 import {
   boatVmCapableEnvironmentIds,
@@ -78,6 +79,91 @@ function LimitField({
         <NumberFieldInput aria-label={label} />
       </NumberFieldGroup>
     </NumberField>
+  );
+}
+
+/**
+ * Links a server without a boat key to the one that has it, so this server's
+ * agents use boat VMs through it. The pairing code is spent on save.
+ */
+function BoatManagerLinkRow({
+  boatManager,
+  onSave,
+}: {
+  readonly boatManager: SandboxJobSettings["boatManager"];
+  readonly onSave: (patch: { readonly url: string; readonly pairingCode?: string }) => void;
+}) {
+  const [url, setUrl] = useState(boatManager.url);
+  const [pairingCode, setPairingCode] = useState("");
+  // The row remounts on every link change, which is when the expiry can change.
+  const [nowMs] = useState(() => Date.now());
+  const linked = boatManager.url !== "";
+  const expiresAt = Date.parse(boatManager.expiresAt);
+  const current = linked && boatManager.token !== "" && !(expiresAt <= nowMs);
+  const host = linked && URL.canParse(boatManager.url) ? new URL(boatManager.url).host : "";
+  return (
+    <SettingsRow
+      title="Boat manager"
+      serverScoped
+      settingKeys={["sandboxJobs"]}
+      description="Without a boat key here, agents on this environment can still use boat VMs through the environment that has the key. Pair with a code from its Settings, Connections."
+      status={
+        linked ? (
+          current ? (
+            `Linked to ${host}${Number.isNaN(expiresAt) ? "" : ` until ${new Date(expiresAt).toLocaleDateString()}`}.`
+          ) : (
+            <span className="block text-warning-foreground">
+              The link to {host} has ended. Pair again with a new code.
+            </span>
+          )
+        ) : undefined
+      }
+    >
+      <form
+        className="grid max-w-2xl gap-2 pb-3.5 sm:grid-cols-[1fr_10rem_auto_auto]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (url.trim() === "" || pairingCode.trim() === "") return;
+          onSave({ url: url.trim(), pairingCode: pairingCode.trim() });
+          setPairingCode("");
+        }}
+      >
+        <Input
+          size="sm"
+          type="url"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Boat manager URL"
+          placeholder="Boat manager URL"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+        />
+        <Input
+          size="sm"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Pairing code"
+          placeholder="Pairing code"
+          value={pairingCode}
+          onChange={(event) => setPairingCode(event.target.value)}
+        />
+        <Button type="submit" size="xs" disabled={url.trim() === "" || pairingCode.trim() === ""}>
+          {linked ? "Relink" : "Link"}
+        </Button>
+        {linked ? (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              setUrl("");
+              onSave({ url: "" });
+            }}
+          >
+            Unlink
+          </Button>
+        ) : null}
+      </form>
+    </SettingsRow>
   );
 }
 
@@ -320,6 +406,13 @@ function SandboxJobsForm({
         />
       </FoldedSettingsSection>
       <SettingsSection id="boat-vms" title="Boat VMs">
+        {sandboxJobs.providerKeys.boat === "" ? (
+          <BoatManagerLinkRow
+            key={sandboxJobs.boatManager.url}
+            boatManager={sandboxJobs.boatManager}
+            onSave={(boatManager) => update({ boatManager })}
+          />
+        ) : null}
         <SettingsRow
           title="Managed by"
           description="The environment this device starts boat VMs and sandbox jobs through. It keeps the keys and settings below."

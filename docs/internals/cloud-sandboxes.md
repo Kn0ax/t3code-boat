@@ -125,3 +125,35 @@ stops when idle and resumes on the next run.
   provisioning returned its ref. A create that fails after boat has assigned an id stores that id
   before the error is returned, so the failure path can destroy the node. A process that dies before
   that write commits can leave an untracked VM.
+
+## Boat manager link
+
+A server without a boat key can link to the one that has it (the manager) and forward
+`boat_vm_list`, `boat_vm_thread_launch` and `boat_vm_save_snapshot` to the manager's `/mcp`
+([BoatManagerLink](../../apps/server/src/sandbox/BoatManagerLink.ts)).
+
+- **The pairing code is spent while saving settings.** `serverUpdateSettings` hands
+  `sandboxJobs.boatManager.pairingCode` to `BoatManagerLink.prepareSettingsPatch`, which signs in
+  and stores the session instead. There is no link RPC on purpose: one more method in the WebSocket
+  RPC group crosses a TypeScript size limit and silently turns the server's RPC types into `any`.
+  The code is never stored; the session token is a settings secret, so it lives in the secret store
+  like the provider keys.
+- **VMs link back with a narrow session.** On every launch or resume of a VM on the tailnet, the
+  manager mints a one-time code holding only `boat-vms:operate`, labelled with the VM's sandbox id
+  ([BoatVmManagerAccess](../../apps/server/src/sandbox/BoatVmManagerAccess.ts)), and the VM saves
+  it through its own `serverUpdateSettings` over loopback, as a user would. Whatever access the VM
+  asks for, that code approves only the `boat-vms` access level: a 24-hour `mcp-client` session with
+  no orchestration scopes and no MCP capabilities. McpHttpServer refuses such a client every tool but
+  those three before any handler runs, and the three handlers take it without a caller, so it cannot
+  name a project here. A new code first revokes the VM's earlier codes and sessions; deleting the VM
+  revokes them too.
+- **Relay-only VMs do not link.** The VM reaches the manager at the manager's tailnet origin
+  (Tailscale Serve, else a tailnet address, from DirectEndpoints). A VM reached only over the boat
+  relay has no route to it, and a manager with no tailnet origin links nothing.
+- **The VM must run a release that has the link.** VMs install the host's published version, or the
+  pinned nightly when the host's version was never published. A release without the link drops the
+  unknown setting; the VM step reports that and the launch carries on without the link. A fork's
+  version names an upstream release with different code, so a fork host sets
+  `T3CODE_RELEASE_BASE_URL` to its own release downloads and `T3CODE_SANDBOX_T3_VERSION` to the
+  release its VMs and job nodes install (`sandboxT3Release` in
+  [SandboxJobService.ts](../../apps/server/src/sandbox/SandboxJobService.ts)).

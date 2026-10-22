@@ -126,6 +126,7 @@ import * as ReplayMarkers from "./auth/replayMarkers.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as SandboxJobService from "./sandbox/SandboxJobService.ts";
 import * as BoatVmService from "./sandbox/BoatVmService.ts";
+import * as BoatManagerLink from "./sandbox/BoatManagerLink.ts";
 import * as WebhookRoute from "./scheduledTasks/webhookRoute.ts";
 import * as RelayDeliveryProof from "./scheduledTasks/RelayDeliveryProof.ts";
 import * as HeldHooksWaker from "./relay/HeldHooksWaker.ts";
@@ -726,7 +727,9 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(layerPullRequestService),
   // Sandbox job nodes are driven from MCP and watched in the background, and boat
   // VMs are kept alive in the background; one instance of each owns them.
-  Layer.provide(Layer.mergeAll(SandboxJobService.layer(), BoatVmService.layer())),
+  Layer.provide(
+    Layer.mergeAll(SandboxJobService.layer(), BoatVmService.layer(), BoatManagerLink.layer),
+  ),
   Layer.provide(BoatVmProxy.layer),
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),

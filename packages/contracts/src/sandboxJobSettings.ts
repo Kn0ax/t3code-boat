@@ -45,6 +45,19 @@ export const SandboxModelProxySettings = Schema.Struct({
   key: SecretField,
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 
+/**
+ * Another T3 server that holds the boat key ("the manager"). A server without a
+ * key of its own forwards its boat VM MCP tools there. The server fills token
+ * and expiresAt itself when it spends a pairing code from the manager; the
+ * token is secret like the keys above, and clearing url removes it.
+ */
+const BoatManagerLinkSettings = Schema.Struct({
+  url: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  token: SecretField,
+  /** When the manager's session ends (ISO time); a new pairing code links again. */
+  expiresAt: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+
 export const SandboxJobSettings = Schema.Struct({
   /** Off until the user turns it on: a job spends money on their provider account. */
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -76,6 +89,7 @@ export const SandboxJobSettings = Schema.Struct({
   /** boat environment new VMs attach for its logins and secrets; empty attaches none. */
   boatVmEnvironment: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   modelProxy: SandboxModelProxySettings,
+  boatManager: BoatManagerLinkSettings,
   /** The identity commits made on nodes and boat VMs carry; empty leaves git's own. */
   gitUserName: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   gitUserEmail: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -119,7 +133,17 @@ export const SandboxJobSettingsPatch = Schema.Struct({
       key: Schema.optionalKey(Schema.String),
     }),
   ),
+  boatManager: Schema.optionalKey(
+    Schema.Struct({
+      url: Schema.optionalKey(Schema.String),
+      /** A one-time code from the manager; the server signs in with it and never stores it. */
+      pairingCode: Schema.optionalKey(Schema.String),
+      token: Schema.optionalKey(Schema.String),
+      expiresAt: Schema.optionalKey(Schema.String),
+    }),
+  ),
   gitUserName: Schema.optionalKey(Schema.String),
   gitUserEmail: Schema.optionalKey(Schema.String),
   allowPush: Schema.optionalKey(Schema.Boolean),
 });
+export type SandboxJobSettingsPatch = typeof SandboxJobSettingsPatch.Type;

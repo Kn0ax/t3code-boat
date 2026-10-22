@@ -33,7 +33,13 @@ export interface SandboxNodeEndpoint {
 export class SandboxNodeMcpError extends Schema.TaggedError<SandboxNodeMcpError>()(
   "SandboxNodeMcpError",
   {
-    reason: Schema.Literals(["unreachable", "unsupported", "sign-in-refused", "bad-response"]),
+    reason: Schema.Literals([
+      "unreachable",
+      "unsupported",
+      "sign-in-refused",
+      "unauthorized",
+      "bad-response",
+    ]),
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -60,11 +66,18 @@ export class SandboxNodeToolError extends Schema.TaggedError<SandboxNodeToolErro
 export class SandboxNodeMcp extends Context.Service<
   SandboxNodeMcp,
   {
-    /** Spends `pairingCode` for a full-access MCP client session on the node. */
+    /**
+     * Spends `pairingCode` for a full-access MCP client session on the node,
+     * listed there under `clientName`. The session cannot be refreshed.
+     */
     readonly signIn: (
       endpoint: SandboxNodeEndpoint,
       pairingCode: string,
-    ) => Effect.Effect<Redacted.Redacted<string>, SandboxNodeMcpError>;
+      clientName?: string,
+    ) => Effect.Effect<
+      { readonly token: Redacted.Redacted<string>; readonly expiresInSeconds: number },
+      SandboxNodeMcpError
+    >;
     readonly call: <S extends Schema.Top>(input: {
       readonly endpoint: SandboxNodeEndpoint;
       readonly token: Redacted.Redacted<string>;
@@ -118,6 +131,7 @@ const make = Effect.gen(function* () {
   const signIn = Effect.fn("SandboxNodeMcp.signIn")(function* (
     endpoint: SandboxNodeEndpoint,
     pairingCode: string,
+    clientName: string = CLIENT_NAME,
   ) {
     const refused = (detail: string) => (cause: unknown) =>
       new SandboxNodeMcpError({ reason: "sign-in-refused", detail, cause });
@@ -143,7 +157,7 @@ const make = Effect.gen(function* () {
       ),
     );
     const registered = yield* client.mcpOAuth
-      .register({ payload: { client_name: CLIENT_NAME, redirect_uris: [REDIRECT_URI] } })
+      .register({ payload: { client_name: clientName, redirect_uris: [REDIRECT_URI] } })
       .pipe(Effect.mapError(refused("The sandbox node refused to register T3 Code.")));
     const verifier = base64Url(yield* crypto.randomBytes(32).pipe(Effect.orDie));
     const challenge = base64Url(
@@ -181,7 +195,7 @@ const make = Effect.gen(function* () {
         },
       })
       .pipe(Effect.mapError(refused("The sandbox node did not issue a session.")));
-    return Redacted.make(token.access_token);
+    return { token: Redacted.make(token.access_token), expiresInSeconds: token.expires_in };
   });
 
   const call = Effect.fn("SandboxNodeMcp.call")(
@@ -192,6 +206,8 @@ const make = Effect.gen(function* () {
       readonly arguments: Readonly<Record<string, unknown>>;
       readonly result: S;
     }) {
+      // An expired or revoked session answers 401, which needs a new sign-in, not a retry.
+      let unauthorized = false;
       const result = yield* callAcpMcpTool({
         endpoint: `${input.endpoint.httpBaseUrl.replace(/\/+$/, "")}/mcp`,
         authorization: `Bearer ${Redacted.value(input.token)}`,
@@ -201,15 +217,23 @@ const make = Effect.gen(function* () {
           fetch(url, {
             ...init,
             headers: { ...input.endpoint.headers, ...(init?.headers as Record<string, string>) },
+          }).then((response) => {
+            if (response.status === 401) unauthorized = true;
+            return response;
           }),
       }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SandboxNodeMcpError({
-              reason: "unreachable",
-              detail: `Could not call ${input.tool} on the sandbox node.`,
-              cause,
-            }),
+        Effect.mapError((cause) =>
+          unauthorized
+            ? new SandboxNodeMcpError({
+                reason: "unauthorized",
+                detail: `The sandbox node refused this server's session for ${input.tool}.`,
+                cause,
+              })
+            : new SandboxNodeMcpError({
+                reason: "unreachable",
+                detail: `Could not call ${input.tool} on the sandbox node.`,
+                cause,
+              }),
         ),
       );
       const envelope = (

@@ -249,7 +249,7 @@ const makeNodeMcp = (node: FakeNode) => {
     signIn: (_endpoint, pairingCode) =>
       Effect.sync(() => {
         node.signIns.push(pairingCode);
-        return Redacted.make(`token-for-${pairingCode}`);
+        return { token: Redacted.make(`token-for-${pairingCode}`), expiresInSeconds: 3600 };
       }),
     // The fake answers in the node's own shapes; decoding them is SandboxNodeMcp's job.
     call: (input) =>

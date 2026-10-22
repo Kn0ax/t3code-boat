@@ -52,6 +52,8 @@ path rejects that subject, because the RPC surface would let the agent act
 above its ceiling. Inside MCP the credential sets the limits and tool
 parameters only pick targets; see
 [threadAccess](../../apps/server/src/mcp/threadAccess.ts).
+A pairing code holding `boat-vms:operate` approves a third grant no user picks, for
+boat VMs to call back; see [cloud sandboxes](cloud-sandboxes.md#boat-manager-link).
 
 Issuer and resource URLs come from the request's Host and
 `X-Forwarded-Proto`, so one server answers over loopback, Tailscale Serve and a

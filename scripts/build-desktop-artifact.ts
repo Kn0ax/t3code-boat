@@ -2735,8 +2735,38 @@ export function resolveDesktopRuntimeDependencies(
   );
 }
 
+export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
+  updateChannel: "latest" | "nightly",
+) {
+  const env = yield* Config.all({
+    updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
+    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
+  });
+  const rawRepo = (
+    Option.getOrUndefined(env.updateRepository)?.trim() ||
+    Option.getOrUndefined(env.githubRepository)?.trim() ||
+    ""
+  ).trim();
+  if (!rawRepo) return undefined;
+
+  const [owner, repo, ...rest] = rawRepo.split("/");
+  if (!owner || !repo || rest.length > 0) return undefined;
+
+  return {
+    provider: "github",
+    owner,
+    repo,
+    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
+  };
+});
+
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
+}
+
+export function isDesktopPreviewVersion(version: string): boolean {
+  return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
@@ -2828,12 +2858,23 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  // The fork ships without an update feed, so it never downloads or installs
-  // official releases. A missing `publish` makes electron-builder infer a
-  // GitHub feed from GH_TOKEN/GITHUB_TOKEN, so it stays explicitly null.
-  buildConfig.publish = mockUpdates
-    ? [{ provider: "generic", url: resolveMockUpdateServerUrl(mockUpdateServerPort) }]
-    : null;
+  // A missing `publish` makes electron-builder infer a GitHub feed from
+  // GH_TOKEN/GITHUB_TOKEN. The staged app has no repository to resolve it
+  // against, so writing update manifests then crashes on a null config.
+  buildConfig.publish = null;
+  if (!isDesktopPreviewVersion(version)) {
+    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+    if (publishConfig) {
+      buildConfig.publish = [publishConfig];
+    } else if (mockUpdates) {
+      buildConfig.publish = [
+        {
+          provider: "generic",
+          url: resolveMockUpdateServerUrl(mockUpdateServerPort),
+        },
+      ];
+    }
+  }
 
   if (platform === "mac") {
     const path = yield* Path.Path;

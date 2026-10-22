@@ -4,8 +4,9 @@
  * every thread on the VM that changed since the last pass to this server: a
  * copy here that follows the VM's thread as it grows and is deleted when the
  * VM's thread is. Deleted threads are never copied. A thread of a project with
- * no repository remote, such as a scratch VM's "No project", is mirrored into
- * this server's own scratch project.
+ * no repository remote, such as a scratch VM's "No project", or of a repository
+ * no project here checks out, is mirrored into this server's own scratch
+ * project.
  *
  * A VM holds the threads of one repository, so a rule applies once it holds
  * for every thread on the VM:
@@ -236,7 +237,7 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
   readonly threadImport: ThreadImportService.ThreadImportService["Service"];
   /**
    * This server's project for a VM project's repository remote, or its scratch
-   * project when the VM project has none; fails with why there is none.
+   * project when there is none; fails with why it cannot tell.
    */
   readonly homeProjectFor: (remoteUrl: string | null) => Effect.Effect<ProjectId, string>;
   /** Run before deleting a VM, such as releasing its tailnet node; failures are ignored. */

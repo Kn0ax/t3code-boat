@@ -208,6 +208,7 @@ import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
+import * as BoatManagerLink from "./sandbox/BoatManagerLink.ts";
 import * as BoatVmService from "./sandbox/BoatVmService.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -1252,6 +1253,7 @@ export const layerWsRpc = (
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const boatVms = yield* BoatVmService.BoatVmService;
+      const boatManagerLink = yield* BoatManagerLink.BoatManagerLink;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
@@ -2392,7 +2394,14 @@ export const layerWsRpc = (
                   Effect.provide(deviceHostContext),
                 )
               : undefined;
-            const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
+            const sandboxJobs = patch.sandboxJobs
+              ? yield* boatManagerLink.prepareSettingsPatch(patch.sandboxJobs)
+              : undefined;
+            const nextPatch = {
+              ...patch,
+              ...(deviceHosts ? { deviceHosts } : {}),
+              ...(sandboxJobs ? { sandboxJobs } : {}),
+            };
             const settings = yield* providerInstanceMutation === undefined
               ? serverSettings.updateSettings(nextPatch)
               : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
@@ -3148,6 +3157,7 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const boatVms = yield* BoatVmService.BoatVmService;
+    const boatManagerLink = yield* BoatManagerLink.BoatManagerLink;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3234,6 +3244,7 @@ export const layer = Layer.unwrap(
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(BoatVmService.BoatVmService, boatVms)),
+              Layer.provide(Layer.succeed(BoatManagerLink.BoatManagerLink, boatManagerLink)),
               Layer.provide(OtlpEndpointCheck.layer),
               Layer.provide(
                 Layer.succeed(

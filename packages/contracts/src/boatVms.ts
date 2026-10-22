@@ -1,6 +1,14 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 
 /**
  * boat VMs a client can run a thread on. The environment that holds the boat
@@ -165,6 +173,50 @@ export const BoatVmLaunchResult = Schema.Struct({
   warning: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type BoatVmLaunchResult = typeof BoatVmLaunchResult.Type;
+
+export const BoatVmThreadLaunchInput = Schema.Struct({
+  sandboxId: Schema.optionalKey(
+    TrimmedNonEmptyString.annotate({
+      description: "An existing boat VM to start, from boat_vm_list. Omitted creates a new one.",
+    }),
+  ),
+  projectId: Schema.optionalKey(
+    ProjectId.annotate({
+      description:
+        "This environment's project whose repository the VM checks out. Omitted uses the calling thread's project.",
+    }),
+  ),
+  scratch: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Start the thread without a project, in the VM's Scratch. Not with projectId.",
+    }),
+  ),
+  repository: Schema.optionalKey(
+    BoatVmRepository.annotate({
+      description:
+        "The repository the VM checks out, in place of projectId; a server linked to this one as its boat manager passes it. Not with projectId or scratch.",
+    }),
+  ),
+  title: TrimmedNonEmptyString,
+  message: TrimmedNonEmptyString.check(Schema.isMaxLength(120000)).annotate({
+    description: "The task for the VM thread's agent.",
+  }),
+  modelSelection: Schema.optionalKey(ModelSelection),
+  runtimeMode: Schema.optionalKey(RuntimeMode),
+  interactionMode: Schema.optionalKey(ProviderInteractionMode),
+});
+export type BoatVmThreadLaunchInput = typeof BoatVmThreadLaunchInput.Type;
+
+export const BoatVmThreadLaunchResult = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** The thread and its project in the VM's own T3, not this environment. */
+  threadId: ThreadId,
+  projectId: ProjectId,
+  /** Why the VM's checkout was left as it was. */
+  warning: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type BoatVmThreadLaunchResult = typeof BoatVmThreadLaunchResult.Type;
 
 export const BoatVmBringHomeInput = Schema.Struct({
   sandboxId: TrimmedNonEmptyString,

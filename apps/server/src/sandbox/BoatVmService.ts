@@ -28,10 +28,20 @@ import {
   type BoatVmLaunchListEvent,
   type BoatVmLaunchResult,
   type BoatVmListResult,
+  type BoatVmRepository,
   type BoatVmSaveSnapshotInput,
   type BoatVmSnapshotState,
+  type BoatVmThreadLaunchInput,
+  type BoatVmThreadLaunchResult,
+  ModelSelection,
+  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_PROTOCOL_VERSION,
   type OrchestrationProjectShell,
+  ProjectId,
+  ProviderInteractionMode,
+  RuntimeMode,
   type SandboxJobSettings,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   formatSandboxLaunchEnv,
@@ -62,11 +72,11 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -77,12 +87,15 @@ import * as BoatVmProxy from "./BoatVmProxy.ts";
 import * as BoatCatalog from "./BoatCatalog.ts";
 import * as BoatVmLifecycle from "./BoatVmLifecycle.ts";
 import * as BoatVmLaunches from "./BoatVmLaunches.ts";
-import { sandboxT3Version } from "./SandboxJobService.ts";
+import * as BoatVmManagerAccess from "./BoatVmManagerAccess.ts";
+import { sandboxT3Release } from "./SandboxJobService.ts";
 
 const T3_PORT = 3773;
 /** Activity in the last check interval (plus slack) keeps a VM up. */
 const KEEP_ALIVE_INTERVAL_MINUTES = 5;
 const SCRIPT_TIMEOUT_MS = 5 * 60_000;
+/** Linking includes the VM signing in to this server over the tailnet. */
+const MANAGER_LINK_TIMEOUT_MS = 60_000;
 const SYNC_ENV_PATH = "~/.t3/boat-sync-env";
 
 /** scp-style remotes (`git@host:owner/repo`) have no SSH key on the VM; HTTPS takes GH_TOKEN. */
@@ -325,6 +338,213 @@ const REMOVE_BUNDLE_SCRIPT = `case "$1" in
 esac
 `;
 
+// Starts a thread in the VM's own T3 over loopback, as an outside MCP client
+// of its /mcp: it spends the launch's one-time pairing code through the MCP
+// OAuth sign-in, finds or registers the project for the checkout (none for
+// Scratch), then calls t3_thread_launch. The request, pairing code included,
+// comes as a file it deletes, since exec arguments land in boat's command
+// history. Prints one JSON line: the thread, or the tool that refused.
+export const VM_THREAD_LAUNCH_SCRIPT = `set -eu
+REQUEST="$HOME/.t3/boat-thread-launch-$1.json"
+trap 'rm -f "$REQUEST"' EXIT
+T3_PORT="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/port" 2>/dev/null || printf ${T3_PORT})"
+export T3_PORT
+node --input-type=module -e '
+const { readFileSync } = await import("node:fs");
+const { createHash, randomBytes } = await import("node:crypto");
+const request = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const base = "http://127.0.0.1:" + process.env.T3_PORT;
+const send = async (path, init) => {
+  const response = await fetch(base + path, init);
+  if (!response.ok) throw new Error(path + " answered " + response.status);
+  return response;
+};
+const post = async (path, body) =>
+  (await send(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+
+const { resource } = await (await send("/.well-known/oauth-protected-resource/mcp")).json();
+const redirect = "http://127.0.0.1/t3-boat-vm-thread";
+const client = await post("/oauth/mcp/register", { client_name: "T3 Code boat VM launch", redirect_uris: [redirect] });
+const verifier = randomBytes(32).toString("base64url");
+const decided = await post("/oauth/mcp/decision", {
+  authorization: {
+    response_type: "code",
+    client_id: client.client_id,
+    redirect_uri: redirect,
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+    resource,
+  },
+  decision: { _tag: "pairing-code", access: "full-access", code: request.pairingCode },
+});
+const code = new URL(decided.redirectTo).searchParams.get("code");
+if (code === null) throw new Error("The VM did not approve the sign-in.");
+const { access_token: token } = await (await send("/oauth/mcp/token", {
+  method: "POST",
+  headers: { "content-type": "application/x-www-form-urlencoded" },
+  body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: redirect, client_id: client.client_id, code_verifier: verifier, resource }),
+})).json();
+
+let session = null;
+let protocol = null;
+let lastId = 0;
+const rpc = async (method, params) => {
+  const id = method.startsWith("notifications/") ? undefined : ++lastId;
+  const response = await fetch(base + "/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: "Bearer " + token,
+      ...(session === null ? {} : { "mcp-session-id": session }),
+      ...(protocol === null ? {} : { "mcp-protocol-version": protocol }),
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+  });
+  session = response.headers.get("mcp-session-id") ?? session;
+  if (!response.ok) throw new Error("/mcp " + method + " answered " + response.status);
+  const text = await response.text();
+  if (id === undefined) return undefined;
+  const messages = (response.headers.get("content-type") ?? "").includes("text/event-stream")
+    ? text.split("\\n").filter((line) => line.startsWith("data:")).map((line) => JSON.parse(line.slice(5)))
+    : [JSON.parse(text)];
+  const reply = messages.find((message) => message.id === id);
+  if (reply === undefined || reply.error !== undefined) throw new Error("/mcp " + method + " failed");
+  return reply.result;
+};
+const parse = (text) => {
+  try { return JSON.parse(text); } catch { return text; }
+};
+class Refused {
+  constructor(tool, message) { this.tool = tool; this.message = message; }
+}
+const call = async (tool, args) => {
+  const result = await rpc("tools/call", { name: tool, arguments: args });
+  const text = result.content?.find((part) => part.type === "text")?.text;
+  const payload = result.structuredContent ?? (text === undefined ? undefined : parse(text));
+  if (result.isError === true) throw new Refused(tool, String(payload?.message ?? text ?? "it failed"));
+  return payload;
+};
+
+protocol = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t3-code-boat-vm", version: "1" } })).protocolVersion ?? null;
+await rpc("notifications/initialized");
+try {
+let projectId;
+if (request.workspaceRoot !== null) {
+  for (let cursor = 0; projectId === undefined && cursor !== null; ) {
+    const page = await call("t3_project_list", { cursor, limit: 100 });
+    projectId = page.projects.find((project) => project.workspaceRoot === request.workspaceRoot)?.id;
+    cursor = page.nextCursor;
+  }
+  projectId ??= (await call("t3_project_create", { title: request.projectTitle, workspaceRoot: request.workspaceRoot, createWorkspaceRootIfMissing: false })).id;
+}
+const launched = await call("t3_thread_launch", { ...request.thread, ...(projectId === undefined ? { scratch: true } : { projectId }) });
+process.stdout.write(JSON.stringify({ threadId: launched.threadId, projectId: launched.projectId }));
+} catch (error) {
+  if (!(error instanceof Refused)) throw error;
+  process.stdout.write(JSON.stringify({ failure: { tool: error.tool, message: error.message } }));
+}
+' "$REQUEST"
+`;
+
+// Links the VM's own T3 back to this server as its boat manager, as a user
+// would in its Settings: it saves sandboxJobs.boatManager over the VM's
+// WebSocket with a short-lived settings:write token its `t3` issues there, and
+// that save spends the code (BoatManagerLink). The request, code included,
+// comes as a file it deletes, since exec arguments land in boat's history.
+export const VM_MANAGER_LINK_SCRIPT = `set -eu
+REQUEST="$HOME/.t3/boat-manager-link-$1.json"
+trap 'rm -f "$REQUEST"' EXIT
+STATE_DIR="$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}"
+[ -x "$STATE_DIR/run-t3.sh" ] || { printf 'No T3 runner on this VM.\\n' >&2; exit 3; }
+T3_PORT="$(cat "$STATE_DIR/port" 2>/dev/null || printf ${T3_PORT})"
+T3_TOKEN="$("$STATE_DIR/run-t3.sh" auth session issue --base-dir "$HOME/.t3" --scope settings:write --ttl 5m --token-only)"
+export T3_PORT T3_TOKEN
+node --input-type=module -e '
+const { readFileSync } = await import("node:fs");
+const request = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const host = "127.0.0.1:" + process.env.T3_PORT;
+const issued = await fetch("http://" + host + "/api/auth/websocket-ticket", {
+  method: "POST",
+  headers: { authorization: "Bearer " + process.env.T3_TOKEN },
+});
+if (!issued.ok) throw new Error("/api/auth/websocket-ticket answered " + issued.status);
+const { ticket } = await issued.json();
+const socket = new WebSocket("ws://" + host + "/ws?${ORCHESTRATION_PROTOCOL_QUERY_PARAM}=${ORCHESTRATION_PROTOCOL_VERSION}&wsTicket=" + encodeURIComponent(ticket));
+const exit = await new Promise((resolve, reject) => {
+  socket.addEventListener("open", () => socket.send(JSON.stringify({
+    _tag: "Request",
+    id: "1",
+    tag: "server.updateSettings",
+    payload: { patch: { sandboxJobs: { boatManager: { url: request.managerUrl, pairingCode: request.pairingCode } } } },
+    headers: [],
+  })));
+  socket.addEventListener("message", (event) => {
+    for (const message of [JSON.parse(String(event.data))].flat()) {
+      if (message._tag === "Exit" && String(message.requestId) === "1") resolve(message.exit);
+    }
+  });
+  socket.addEventListener("error", () => reject(new Error("The VM T3 WebSocket failed.")));
+  socket.addEventListener("close", () => reject(new Error("The VM T3 WebSocket closed.")));
+});
+socket.close();
+if (exit._tag !== "Success") {
+  const failure = exit.cause?.find((part) => part._tag === "Fail")?.error;
+  throw new Error("Saving the boat manager link failed: " + String(failure?.message ?? failure?._tag ?? "unknown"));
+}
+// A T3 release without the boat manager link drops the unknown setting and succeeds.
+if (exit.value?.sandboxJobs?.boatManager?.url !== request.managerUrl) {
+  throw new Error("This VM runs a T3 release that cannot link to a boat manager.");
+}
+' "$REQUEST"
+`;
+
+const VmManagerLinkRequest = Schema.Struct({
+  managerUrl: Schema.String,
+  pairingCode: Schema.String,
+});
+const encodeVmManagerLinkRequest = Schema.encodeEffect(Schema.fromJsonString(VmManagerLinkRequest));
+
+const VmThreadLaunchRequest = Schema.Struct({
+  pairingCode: Schema.String,
+  /** The VM's checkout, or null for its Scratch. */
+  workspaceRoot: Schema.NullOr(Schema.String),
+  projectTitle: Schema.String,
+  thread: Schema.Struct({
+    title: Schema.String,
+    message: Schema.String,
+    modelSelection: Schema.optionalKey(ModelSelection),
+    runtimeMode: Schema.optionalKey(RuntimeMode),
+    interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  }),
+});
+const encodeVmThreadLaunchRequest = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.toCodecJson(VmThreadLaunchRequest)),
+);
+const decodeVmThreadLaunchReply = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Union([
+      Schema.Struct({ threadId: ThreadId, projectId: ProjectId }),
+      Schema.Struct({ failure: Schema.Struct({ tool: Schema.String, message: Schema.String }) }),
+    ]),
+  ),
+);
+
+/** The repository a boat VM checks out for a project; undefined without a remote T3 recognizes. */
+const repositoryOf = (
+  identity: OrchestrationProjectShell["repositoryIdentity"],
+): BoatVmRepository | undefined =>
+  identity == null
+    ? undefined
+    : {
+        remoteUrl: identity.locator.remoteUrl,
+        ...(identity.owner === undefined ? {} : { owner: identity.owner }),
+        name:
+          identity.name ??
+          (identity.rootPath ?? identity.canonicalKey).split(/[/\\]/).findLast(Boolean) ??
+          identity.canonicalKey,
+      };
+
 const CHECKOUT_DIRECTORY = /^[A-Za-z0-9._-]+$/;
 const BUNDLE_ANSWER = /^(\/\S*\/\.t3-bring-home\.[A-Za-z0-9]+) ([01]) ([01])$/;
 
@@ -496,6 +716,20 @@ export class BoatVmService extends Context.Service<
   {
     readonly list: Effect.Effect<BoatVmListResult, BoatVmError>;
     readonly launch: (input: BoatVmLaunchInput) => Effect.Effect<BoatVmLaunchResult, BoatVmError>;
+    /**
+     * Launches a VM for `repository`, else this environment's project (null:
+     * none), as `launch` does, then starts a thread with `message` in the
+     * VM's own T3, in its project for the checkout or in its Scratch.
+     */
+    readonly launchThread: (
+      input: Omit<BoatVmThreadLaunchInput, "projectId" | "scratch"> & {
+        readonly projectId: ProjectId | null;
+      },
+    ) => Effect.Effect<BoatVmThreadLaunchResult, BoatVmError>;
+    /** The repository a boat VM checks out for one of this environment's projects. */
+    readonly projectRepository: (
+      projectId: ProjectId,
+    ) => Effect.Effect<BoatVmRepository, BoatVmError>;
     /** Every launch in progress, and ones that just ended, on each stage change. */
     readonly launches: Stream.Stream<BoatVmLaunchListEvent>;
     /** Interrupts a launch; a new VM it made is removed like a failed one. */
@@ -550,29 +784,72 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const scope = yield* Effect.scope;
-  const t3Version = options.t3Version ?? sandboxT3Version(packageJson.version);
+  const managerAccess = yield* BoatVmManagerAccess.BoatVmManagerAccess;
+  const t3Version = options.t3Version ?? (yield* sandboxT3Release).t3Version;
   const lifecycle = yield* BoatVmLifecycle.make({
     statePath: path.join((yield* ServerConfig.ServerConfig).stateDir, "boat-vm-threads.json"),
     manager,
     threadImport: yield* ThreadImportService.ThreadImportService,
-    homeProjectFor: (remoteUrl) =>
-      remoteUrl === null
-        ? managedFolders.ensureScratchProject.pipe(
-            Effect.map(({ projectId }) => projectId),
-            Effect.mapError((error) => error.message),
-          )
+    homeProjectFor: (remoteUrl) => {
+      const scratch = managedFolders.ensureScratchProject.pipe(
+        Effect.map(({ projectId }) => projectId),
+        Effect.mapError((error) => error.message),
+      );
+      return remoteUrl === null
+        ? scratch
         : projects.listShells().pipe(
             Effect.mapError(() => "this environment's projects could not be read"),
             Effect.flatMap((shells) => {
               const project = projectShellForRemote(shells, remoteUrl);
-              return project === undefined
-                ? Effect.fail(`no project here is a checkout of ${remoteUrl}`)
-                : Effect.succeed(project.id);
+              return project === undefined ? scratch : Effect.succeed(project.id);
             }),
-          ),
+          );
+    },
     beforeDelete: (provider, ref) =>
-      provider.exec(ref, { script: TAILNET_LOGOUT_SCRIPT, timeoutMs: 20_000 }).pipe(Effect.ignore),
+      provider
+        .exec(ref, { script: TAILNET_LOGOUT_SCRIPT, timeoutMs: 20_000 })
+        .pipe(Effect.ignore, Effect.andThen(managerAccess.revoke(ref.sandboxId))),
   });
+
+  /**
+   * Links the VM back to this server for its agents' boat VM tools, with a
+   * session that reaches only those. Only a VM on the tailnet can reach this
+   * server; a failure leaves the VM running without the link.
+   */
+  const linkToManager = Effect.fn("BoatVmService.linkToManager")(
+    function* (provider: SandboxProviderShape, ref: SandboxRef) {
+      const granted = yield* managerAccess.grant(ref.sandboxId);
+      if (Option.isNone(granted)) return;
+      const requestId = yield* crypto.randomUUIDv4();
+      const request = yield* encodeVmManagerLinkRequest(granted.value);
+      yield* provider.writeFile(
+        ref,
+        `~/.t3/boat-manager-link-${requestId}.json`,
+        new TextEncoder().encode(request),
+      );
+      const result = yield* provider.exec(ref, {
+        script: VM_MANAGER_LINK_SCRIPT,
+        args: [requestId],
+        timeoutMs: MANAGER_LINK_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) {
+        yield* Effect.logWarning("boat.vm.managerLink.failed", {
+          sandboxId: ref.sandboxId,
+          exitCode: result.exitCode,
+          stderr: result.stderr.slice(-500),
+        });
+      }
+    },
+    (effect, _provider, ref) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("boat.vm.managerLink.failed", {
+            sandboxId: ref.sandboxId,
+            error: String(error),
+          }),
+        ),
+      ),
+  );
 
   const resolveProvider: BoatProviderResolver =
     options.resolveProvider ??
@@ -920,6 +1197,10 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             ? undefined
             : yield* report({ stage: "tailscale" }).pipe(Effect.andThen(Fiber.join(tailnetFiber)));
         yield* lifecycle.markLaunched(bootstrap.ref.sandboxId);
+        // Over the relay alone the VM has no route back to this server.
+        if (!useBoatProxy || tailnetHttpBaseUrl !== undefined) {
+          yield* linkToManager(boat, bootstrap.ref);
+        }
 
         return {
           sandboxId: bootstrap.ref.sandboxId,
@@ -1005,6 +1286,89 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
       return yield* exit;
     },
   );
+
+  const projectRepository: BoatVmService["Service"]["projectRepository"] = Effect.fn(
+    "BoatVmService.projectRepository",
+  )(function* (projectId) {
+    const shells = yield* projects
+      .listShells()
+      .pipe(Effect.mapError(() => vmError("Could not read this environment's projects.")));
+    const project = shells.find((shell) => shell.id === projectId);
+    if (project === undefined) return yield* vmError("The project was not found.");
+    const repository = repositoryOf(project.repositoryIdentity);
+    if (repository === undefined) {
+      return yield* vmError(
+        `${project.title} has no repository remote, so a boat VM cannot check it out.`,
+      );
+    }
+    return repository;
+  });
+
+  const launchThread: BoatVmService["Service"]["launchThread"] = Effect.fn(
+    "BoatVmService.launchThread",
+  )(function* ({ projectId, repository: given, sandboxId, ...thread }) {
+    const repository =
+      given ?? (projectId === null ? undefined : yield* projectRepository(projectId));
+    const launched = yield* launch({
+      ...(sandboxId === undefined ? {} : { sandboxId }),
+      ...(repository === undefined ? {} : { repository }),
+    });
+
+    const ref: SandboxRef = { providerId: "boat", sandboxId: launched.sandboxId };
+    const requestId = yield* crypto
+      .randomUUIDv4()
+      .pipe(Effect.mapError(() => vmError("Could not start the thread on the VM.")));
+    const request = yield* encodeVmThreadLaunchRequest({
+      pairingCode: launched.pairingCode,
+      workspaceRoot: repository === undefined ? null : launched.workspaceRoot,
+      projectTitle: path.basename(launched.workspaceRoot),
+      thread,
+    }).pipe(Effect.mapError(() => vmError("Could not start the thread on the VM.")));
+    const result = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const provider = yield* requireProvider(yield* getSettings);
+        yield* provider.writeFile(
+          ref,
+          `~/.t3/boat-thread-launch-${requestId}.json`,
+          new TextEncoder().encode(request),
+        );
+        return yield* provider.exec(ref, {
+          script: VM_THREAD_LAUNCH_SCRIPT,
+          args: [requestId],
+          timeoutMs: SCRIPT_TIMEOUT_MS,
+        });
+      }),
+    ).pipe(
+      Effect.mapError((error) => (error._tag === "BoatVmError" ? error : vmError(describe(error)))),
+    );
+    const reply =
+      result.exitCode === 0
+        ? yield* decodeVmThreadLaunchReply(result.stdout.trim()).pipe(Effect.option)
+        : Option.none();
+    if (Option.isNone(reply)) {
+      yield* Effect.logWarning("boat.vm.threadLaunch.failed", {
+        sandboxId: launched.sandboxId,
+        exitCode: result.exitCode,
+        stderr: result.stderr.slice(-500),
+      });
+      return yield* vmError(
+        `${launched.label} (${launched.sandboxId}) is running, but the thread could not be started there. See the server log.`,
+      );
+    }
+    if ("failure" in reply.value) {
+      return yield* vmError(
+        `${launched.label} (${launched.sandboxId}) is running, but its ${reply.value.failure.tool} refused: ${reply.value.failure.message}`,
+      );
+    }
+    const started: BoatVmThreadLaunchResult = {
+      sandboxId: launched.sandboxId,
+      label: launched.label,
+      threadId: reply.value.threadId,
+      projectId: reply.value.projectId,
+      ...(launched.warning === undefined ? {} : { warning: launched.warning }),
+    };
+    return started;
+  });
 
   const cancelLaunch: BoatVmService["Service"]["cancelLaunch"] = (input) =>
     launchTracker.cancel(input.launchId).pipe(Effect.map((applied) => ({ applied })));
@@ -1208,6 +1572,8 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   return BoatVmService.of({
     list,
     launch,
+    launchThread,
+    projectRepository,
     launches: launchTracker.stream,
     cancelLaunch,
     bringHome,
@@ -1217,4 +1583,11 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
 });
 
 export const layer = (options: BoatVmServiceOptions = {}) =>
-  Layer.effect(BoatVmService, make(options)).pipe(Layer.provide(SandboxEnvironmentManager.layer()));
+  Layer.unwrap(
+    Effect.map(sandboxT3Release, ({ managerOptions }) =>
+      Layer.effect(BoatVmService, make(options)).pipe(
+        Layer.provide(SandboxEnvironmentManager.layer(managerOptions)),
+        Layer.provide(BoatVmManagerAccess.layer),
+      ),
+    ),
+  );

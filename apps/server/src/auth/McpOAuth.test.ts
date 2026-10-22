@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthBoatVmsOperateScope,
   AuthStandardClientScopes,
   type AuthCreatePairingCredentialInput,
   EnvironmentHttpApi,
@@ -564,3 +565,48 @@ it("matches loopback redirects on everything but the port, and https redirects e
   expect(matches("https://bot.example/cb", "https://bot.example/cb?x=1")).toBe(false);
   expect(matches("https://bot.example/cb", "https://evil.example/cb")).toBe(false);
 });
+
+it.live("signs a boat VM code in to the boat VM tools only, under its label, for a day", () =>
+  withRoutes((handler, auth) =>
+    Effect.gen(function* () {
+      const clientId = yield* registeredClientId(handler);
+      const params = authorizeParams(clientId);
+      const pairing = yield* auth.createPairingLink({
+        scopes: [AuthBoatVmsOperateScope],
+        label: "Boat VM vm-1",
+      });
+      // The VM asks for full access, as every link does; the code decides.
+      const approved = yield* decide(handler, params, {
+        _tag: "pairing-code",
+        access: "full-access",
+        code: pairing.credential,
+      });
+      const tokenResponse = yield* handler(
+        at(
+          "/oauth/mcp/token",
+          form({
+            grant_type: "authorization_code",
+            code: new URL(approved.redirectTo!).searchParams.get("code")!,
+            redirect_uri: params.redirect_uri,
+            client_id: clientId,
+            code_verifier: verifier,
+          }),
+        ),
+      );
+      const token = (yield* json<unknown>(tokenResponse)) as {
+        access_token: string;
+        expires_in: number;
+        scope: string;
+      };
+      expect(token.scope).toBe(AuthBoatVmsOperateScope);
+      expect(token.expires_in).toBeLessThanOrEqual(24 * 60 * 60);
+      expect(token.expires_in).toBeGreaterThan(23 * 60 * 60);
+      const signedIn = yield* auth.authenticateMcpClient(
+        HttpServerRequest.fromWeb(
+          at("/mcp", { headers: { authorization: `Bearer ${token.access_token}` } }),
+        ),
+      );
+      expect(signedIn).toMatchObject({ label: "Boat VM vm-1", access: "boat-vms" });
+    }),
+  ),
+);

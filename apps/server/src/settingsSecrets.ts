@@ -182,6 +182,10 @@ export function mapSettingsSecrets(
       ...settings.sandboxJobs.modelProxy,
       key: sandboxKey("sandbox-model-proxy-key", settings.sandboxJobs.modelProxy.key),
     },
+    boatManager: {
+      ...settings.sandboxJobs.boatManager,
+      token: sandboxKey("sandbox-boat-manager-token", settings.sandboxJobs.boatManager.token),
+    },
   };
 
   return {

@@ -129,12 +129,27 @@ holds the boat key keeps VMs up, so run that server on a machine that stays
 on. A VM started from a desktop app archives when that computer sleeps or the
 app quits.
 
-That server also keeps a copy of every thread on its running VMs. About
-every 5 minutes it copies new messages and tool activity from the VM's threads
-to its own project for the same repository, or to its **No project** for a VM
-started without one. Deleted threads are never copied, and deleting a thread on
-the VM deletes its copy. If you send a message in a copy, it becomes your own
-thread and stops following the VM.
+Agents on an environment without a boat key can use the VMs of the one that
+holds it, the boat manager. On the manager, create a pairing code in
+**Settings → Connections**. On the other environment, enter the manager's URL
+and the code under **Settings → Integrations → Sandbox jobs → Boat manager**
+and choose **Link**. Its agents can then list VMs, start threads on them and
+save snapshots, all on the manager. Bring work home on the manager, from its
+project for the repository. The link lasts 30 days; when it ends, pair again
+with a new code, or choose **Unlink** to remove it.
+
+VMs the manager starts on your tailnet link back to it by themselves, so agents
+on a VM can start more VMs too. That link reaches only the boat VM tools, and a
+new one replaces it each time the VM starts. For this, the manager needs an
+address on your tailnet, such as one from Tailscale Serve.
+
+The server with the boat key also keeps a copy of every thread on its running
+VMs. About every 5 minutes it copies new messages and tool activity from the
+VM's threads to its own project for the same repository, or to its **No
+project** when it has none for that repository or the VM was started without
+one. Deleted threads are never copied, and deleting a thread on the VM deletes
+its copy. If you send a message in a copy, it becomes your own thread and stops
+following the VM.
 
 On the same check, it acts once every thread on a VM agrees, after copying the
 threads one last time:
