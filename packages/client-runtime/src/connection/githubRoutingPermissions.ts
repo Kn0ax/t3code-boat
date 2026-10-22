@@ -50,6 +50,13 @@ function routeConnectionKey(
     const { alias, hostname, username, port } = profile.target;
     return JSON.stringify([target._tag, target.environmentId, alias, hostname, username, port]);
   }
+  // The provider sandbox, not its URL: a reconnect may move the URL, but
+  // only the sandbox the user created can answer on it.
+  if (target._tag === "SandboxConnectionTarget") {
+    if (profile?._tag !== "SandboxConnectionProfile") return null;
+    const { providerId, sandboxId } = profile.sandbox;
+    return JSON.stringify([target._tag, target.environmentId, providerId, sandboxId]);
+  }
   const baseUrls =
     target._tag === "PrimaryConnectionTarget"
       ? [target.httpBaseUrl, target.wsBaseUrl]

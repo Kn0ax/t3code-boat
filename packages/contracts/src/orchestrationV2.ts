@@ -3221,6 +3221,28 @@ export const OrchestrationV2ThreadDetailSnapshot = Schema.Struct({
 export type OrchestrationV2ThreadDetailSnapshot = typeof OrchestrationV2ThreadDetailSnapshot.Type;
 
 /**
+ * A read-only copy of a thread from another environment, such as a boat VM that is about
+ * to be deleted. The copy keeps its conversation and tool activity but no runs, checkpoints
+ * or attachments, which stay behind with the other environment's workspace.
+ */
+export const OrchestrationV2ThreadImportInput = Schema.Struct({
+  /** Names where the thread came from; importing the same key again returns the earlier copy. */
+  originKey: TrimmedNonEmptyString,
+  /** The copy joins this environment's project for the repository at this remote. */
+  repositoryRemoteUrl: TrimmedNonEmptyString,
+  snapshot: OrchestrationV2ThreadDetailSnapshot,
+});
+export type OrchestrationV2ThreadImportInput = typeof OrchestrationV2ThreadImportInput.Type;
+
+export const OrchestrationV2ThreadImportResult = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  /** False when the origin was imported before and nothing changed. */
+  created: Schema.Boolean,
+});
+export type OrchestrationV2ThreadImportResult = typeof OrchestrationV2ThreadImportResult.Type;
+
+/**
  * `historyCursor` is opaque; clients must not parse it. Resume live events with `afterSequence =
  * snapshotSequence`.
  */

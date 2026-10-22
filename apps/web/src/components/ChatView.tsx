@@ -365,6 +365,16 @@ import { useEnvironmentDisconnectDelay } from "../hooks/useEnvironmentDisconnect
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { useEnvironmentQuery } from "../state/query";
+import {
+  boatVmEnvironment,
+  boatVmRunOnOptions,
+  newBoatVmEntry,
+  pairedBoatVm,
+  useLaunchBoatVm,
+} from "../state/boatVms";
+import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
+import { useBoatVmLaunchBanner } from "./chat/useBoatVmLaunchBanner";
+import { inferProjectTitleFromPath } from "../lib/projectPaths";
 import { useEnvironmentScope } from "~/state/session";
 import {
   environmentServerConfigsAtom,
@@ -2135,8 +2145,105 @@ export default function ChatView(props: ChatViewProps) {
     activeProject,
     activeProjectIsScratch && draftId !== null,
   );
-  const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
-  const canAutoBalanceEnvironments = hasMultipleEnvironments && !activeProjectIsScratch;
+  // A draft in a repository can also run on a boat VM, started by the machine
+  // holding the boat key.
+  const boatVmRepository =
+    draftId && !activeProjectIsScratch ? (activeProject?.repositoryIdentity ?? null) : null;
+  const boatVmManagingHostId = useBoatVmHostEnvironmentId();
+  const boatVmHostId = boatVmRepository === null ? null : boatVmManagingHostId;
+  const boatVmManagingHostLabel =
+    (boatVmManagingHostId === null
+      ? undefined
+      : environmentById.get(boatVmManagingHostId)?.label) ?? "the environment managing boat VMs";
+  const draftCanRunOnBoat = Boolean(draftId) && !activeProjectIsScratch && activeProject !== null;
+  // An offline machine may be a stopped boat VM, which the thread can start again.
+  const boatVms = useEnvironmentQuery(
+    boatVmManagingHostId === null || (!draftCanRunOnBoat && !activeEnvironmentUnavailable)
+      ? null
+      : boatVmEnvironment.list({ environmentId: boatVmManagingHostId, input: {} }),
+  );
+  const boatVmHostnameOf = (environmentId: EnvironmentId) => {
+    const profile = environmentById.get(environmentId)?.entry.profile;
+    return profile?._tag === "Some" && profile.value._tag === "BearerConnectionProfile"
+      ? (URL.parse(profile.value.httpBaseUrl)?.hostname.split(".")[0] ?? null)
+      : null;
+  };
+  const boatVmPairedOf = (environmentId: EnvironmentId) => {
+    const profile = environmentById.get(environmentId)?.entry.profile;
+    if (profile?._tag !== "Some" || profile.value._tag !== "BearerConnectionProfile") return null;
+    const vm = profile.value.boatVm;
+    return vm === undefined
+      ? null
+      : { sandboxId: vm.sandboxId, owned: vm.hostEnvironmentId === boatVmManagingHostId };
+  };
+  // Shown, with the reason, rather than hidden when a draft cannot start a boat VM.
+  const newBoatVmDisabledReason =
+    boatVms.error !== null
+      ? `Could not list boat VMs: ${boatVms.error}`
+      : boatVms.data?.available === false
+        ? `Add a boat key on ${boatVmManagingHostLabel} in Settings, Integrations, Sandbox jobs.`
+        : boatVmRepository === null
+          ? "This project has no Git remote T3 recognizes."
+          : undefined;
+  const runOnEnvironments =
+    boatVms.data?.available === true
+      ? boatVmRunOnOptions(
+          logicalProjectEnvironments,
+          boatVms.data.vms,
+          boatVmHostnameOf,
+          newBoatVmDisabledReason,
+          boatVms.data.sandboxIds === undefined
+            ? undefined
+            : {
+                sandboxIds: boatVms.data.sandboxIds,
+                pairedVmOf: boatVmPairedOf,
+              },
+        )
+      : draftCanRunOnBoat && newBoatVmDisabledReason !== undefined
+        ? [...logicalProjectEnvironments, newBoatVmEntry(newBoatVmDisabledReason)]
+        : logicalProjectEnvironments;
+  const unavailableBoatVm =
+    activeEnvironmentUnavailable && activeEnvironment !== null
+      ? pairedBoatVm(
+          boatVms.data?.vms.filter((vm) => vm.status !== "destroyed") ?? [],
+          boatVmPairedOf(activeEnvironment.environmentId)?.sandboxId ?? null,
+          boatVmHostnameOf(activeEnvironment.environmentId),
+        )
+      : undefined;
+  const launchBoatVm = useLaunchBoatVm();
+  const boatVmLaunchKey = draftId ?? routeThreadKey;
+  const boatVmLaunchBannerItem = useBoatVmLaunchBanner(boatVmLaunchKey);
+  const [startingBoatVm, setStartingBoatVm] = useState(false);
+  const startUnavailableBoatVm = () => {
+    const repository = activeProject?.repositoryIdentity;
+    if (unavailableBoatVm === undefined || !repository || boatVmManagingHostId === null) return;
+    const name =
+      repository.name ?? inferProjectTitleFromPath(repository.rootPath ?? repository.canonicalKey);
+    setStartingBoatVm(true);
+    void launchBoatVm({
+      hostEnvironmentId: boatVmManagingHostId,
+      sandboxId: unavailableBoatVm.sandboxId,
+      repository: {
+        remoteUrl: repository.locator.remoteUrl,
+        ...(repository.owner === undefined ? {} : { owner: repository.owner }),
+        name,
+      },
+      bannerKey: boatVmLaunchKey,
+    })
+      .then((launched) => {
+        if (launched?.warning === undefined) return;
+        toastManager.add({
+          type: "warning",
+          title: "The boat VM is ready, but its checkout was not updated",
+          description: launched.warning,
+        });
+      })
+      .finally(() => setStartingBoatVm(false));
+  };
+  const hasMultipleEnvironments = runOnEnvironments.length > 1;
+  // Auto balance retargets to an existing project, never a boat VM.
+  const canAutoBalanceEnvironments =
+    logicalProjectEnvironments.length > 1 && !activeProjectIsScratch;
   const activeEnvironmentOption =
     logicalProjectEnvironments.find(
       (environment) => environment.environmentId === activeThread?.environmentId,
@@ -2357,13 +2464,25 @@ export default function ChatView(props: ChatViewProps) {
         id: `environment-unavailable:${activeEnvironmentUnavailableState.environmentId}`,
         variant: unavailableConnection.phase === "error" ? "error" : "warning",
         icon: <WifiOffIcon />,
-        title: `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
+        title:
+          unavailableBoatVm !== undefined && unavailableBoatVm.status !== "running"
+            ? `boat: ${unavailableBoatVm.label} is stopped`
+            : `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
         description: activeEnvironment ? (
           <ConnectionDiagnosisHeadline environment={activeEnvironment} />
         ) : undefined,
         actions: (
           <>
-            {!environmentReconnecting ? (
+            {unavailableBoatVm !== undefined && unavailableBoatVm.status !== "running" ? (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={startingBoatVm || !activeProject?.repositoryIdentity}
+                onClick={startUnavailableBoatVm}
+              >
+                Start VM
+              </Button>
+            ) : !environmentReconnecting ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -3377,13 +3496,61 @@ export default function ChatView(props: ChatViewProps) {
     if (envLocked || !draftId || sendInFlightRef.current) return;
     const originalDraft = getDraftSession(draftId);
     if (!originalDraft || originalDraft.promotedTo) return;
-    const target = logicalProjectEnvironments.find(
-      (env) => env.environmentId === nextEnvironmentId,
-    );
-    if (!target) return;
+    const target = runOnEnvironments.find((env) => env.environmentId === nextEnvironmentId);
+    if (!target || target.disabledReason !== undefined) return;
     const request = { environmentId: target.environmentId, scope: environmentChangeScope };
     environmentChangeRef.current = request;
     setBusyEnvironmentChange(null);
+    const finish = () => {
+      if (environmentChangeRef.current === request) environmentChangeRef.current = null;
+      setBusyEnvironmentChange((busy) => (busy === request ? null : busy));
+    };
+    if (target.boatVm !== undefined) {
+      if (boatVmHostId === null || boatVmRepository === null) return;
+      const name =
+        boatVmRepository.name ??
+        inferProjectTitleFromPath(boatVmRepository.rootPath ?? boatVmRepository.canonicalKey);
+      setBusyEnvironmentChange(request);
+      void launchBoatVm({
+        hostEnvironmentId: boatVmHostId,
+        sandboxId: target.boatVm.sandboxId,
+        repository: {
+          remoteUrl: boatVmRepository.locator.remoteUrl,
+          ...(boatVmRepository.owner === undefined ? {} : { owner: boatVmRepository.owner }),
+          name,
+        },
+        bannerKey: boatVmLaunchKey,
+      })
+        .then((launched) => {
+          if (launched === null) return;
+          const { projectRef, warning } = launched;
+          if (warning !== undefined) {
+            toastManager.add({
+              type: "warning",
+              title: "The boat VM is ready, but its checkout was not updated",
+              description: warning,
+            });
+          }
+          const currentDraft = getDraftSession(draftId);
+          if (
+            environmentChangeRef.current !== request ||
+            environmentChangeScopeRef.current !== request.scope ||
+            sendInFlightRef.current ||
+            !currentDraft ||
+            currentDraft.promotedTo ||
+            currentDraft.environmentId !== originalDraft.environmentId ||
+            currentDraft.projectId !== originalDraft.projectId
+          )
+            return;
+          setDraftThreadContext(draftId, {
+            projectRef,
+            environmentSelection: "manual",
+            loadBalancedEnvironmentId: null,
+          });
+        })
+        .finally(finish);
+      return;
+    }
     const retarget = (project: (typeof allProjects)[number]) => {
       const currentDraft = getDraftSession(draftId);
       if (
@@ -3411,10 +3578,6 @@ export default function ChatView(props: ChatViewProps) {
           loadBalancedEnvironmentId: null,
         });
       }
-    };
-    const finish = () => {
-      if (environmentChangeRef.current === request) environmentChangeRef.current = null;
-      setBusyEnvironmentChange((busy) => (busy === request ? null : busy));
     };
     if (target.projectId !== null) {
       const project = allProjects.find(
@@ -5636,7 +5799,9 @@ export default function ChatView(props: ChatViewProps) {
       backgroundWorkBannerItem,
     ].filter((item) => item !== null);
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
-    const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+    const projectCloneItems = [projectCloneBannerItem, boatVmLaunchBannerItem].filter(
+      (item) => item !== null,
+    );
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
@@ -8662,7 +8827,7 @@ export default function ChatView(props: ChatViewProps) {
                                     ? onAutoEnvironmentStable
                                     : undefined
                                 }
-                                availableEnvironments={logicalProjectEnvironments}
+                                availableEnvironments={runOnEnvironments}
                                 composerControlsHostRef={setRestingComposerControlsHost}
                                 contextStripVisible={showComposerContextStrip}
                               />
@@ -8730,7 +8895,7 @@ export default function ChatView(props: ChatViewProps) {
               gitCwd={gitCwd}
               isGitRepo={isGitRepo}
               envLocked={envLocked}
-              availableEnvironments={logicalProjectEnvironments}
+              availableEnvironments={runOnEnvironments}
               autoEnvironmentLabel={autoEnvironmentLabel}
               onAutoEnvironment={
                 draftId &&

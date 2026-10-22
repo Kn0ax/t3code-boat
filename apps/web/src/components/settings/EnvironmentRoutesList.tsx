@@ -109,7 +109,11 @@ export function EnvironmentRoutesList({
                 route={route}
                 position={index + 1}
                 inUse={connectionRouteId(route.target) === activeRouteId}
-                removable={routes.length > 1 && !isLearned(route)}
+                removable={
+                  routes.length > 1 &&
+                  !isLearned(route) &&
+                  route.target._tag !== "SandboxConnectionTarget"
+                }
                 onRemove={() => void confirmRemove(route)}
               />
             ))}

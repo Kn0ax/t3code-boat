@@ -1,3 +1,4 @@
+import { boatProxySandboxId } from "@t3tools/shared/boatProxy";
 import {
   AuthAccessTokenType,
   type AuthClientPresentationMetadata,
@@ -243,7 +244,9 @@ export const resolveRemoteWebSocketConnectionUrl = Effect.fn(
   });
 
   const url = new URL(input.wsBaseUrl);
-  if (url.pathname === "" || url.pathname === "/") {
+  if (boatProxySandboxId(url.toString()) !== undefined) {
+    url.pathname += "ws";
+  } else if (url.pathname === "" || url.pathname === "/") {
     url.pathname = "/ws";
   }
   url.searchParams.set("wsTicket", issued.ticket);
@@ -274,7 +277,9 @@ export const resolveRemoteDpopWebSocketConnectionUrl = Effect.fn(
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
   });
   const url = new URL(input.wsBaseUrl);
-  if (url.pathname === "" || url.pathname === "/") {
+  if (boatProxySandboxId(url.toString()) !== undefined) {
+    url.pathname += "ws";
+  } else if (url.pathname === "" || url.pathname === "/") {
     url.pathname = "/ws";
   }
   url.searchParams.set("wsTicket", issued.ticket);

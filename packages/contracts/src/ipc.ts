@@ -1,8 +1,9 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
 import { SnapShotSource } from "./chatAttachment.ts";
-import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { EnvironmentId, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import type {
   BrowserImportResult,
@@ -14,6 +15,7 @@ import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { type ClientSettings, type QuitConfirmationMode, SnapShotShortcut } from "./settings.ts";
 import type { EditorId } from "./editor.ts";
+import type { DesktopT3DataImportInput, DesktopT3DataImportState } from "./desktopDataImport.ts";
 import type { PreviewForwardedShortcut } from "./keybindings.ts";
 
 import type {
@@ -459,6 +461,174 @@ export const DesktopSshPasswordPromptResolutionInputSchema = Schema.Struct({
   requestId: Schema.String,
   password: Schema.NullOr(Schema.String),
 });
+
+/**
+ * Cloud sandbox providers the desktop app can run a T3 environment on. Kept in
+ * step with `SandboxProviderId` in `@t3tools/sandbox-core`, which the desktop
+ * checks at compile time.
+ */
+export const DesktopSandboxProviderIdSchema = Schema.Literals(["boat"]);
+export type DesktopSandboxProviderId = typeof DesktopSandboxProviderIdSchema.Type;
+
+export const DesktopSandboxSizeSchema = Schema.Literals(["small", "medium", "large"]);
+export type DesktopSandboxSize = typeof DesktopSandboxSizeSchema.Type;
+
+/**
+ * What the user picked when adding a cloud sandbox environment. It holds no
+ * secret: provider API keys live in the desktop's secure storage and never
+ * reach the renderer.
+ */
+export const DesktopSandboxEnvironmentTargetSchema = Schema.Struct({
+  providerId: DesktopSandboxProviderIdSchema,
+  /** Display name, also shown in the provider's dashboard. */
+  label: Schema.String,
+  size: DesktopSandboxSizeSchema,
+  /** Provider region id; providers without regions ignore it. */
+  region: Schema.optionalKey(Schema.String),
+  /** Auto-stop after this many idle minutes; 0 turns auto-stop off where the provider allows. */
+  idleTimeoutMinutes: NonNegativeInt,
+  /** Install the Claude Code and Codex CLIs when the sandbox image lacks them. */
+  installAgentClis: Schema.Boolean,
+  /**
+   * Pass this machine's GitHub CLI token into the sandbox as `GH_TOKEN`. It
+   * reaches every repository the user can, so it is off unless chosen.
+   */
+  forwardGithubToken: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+});
+export type DesktopSandboxEnvironmentTarget = typeof DesktopSandboxEnvironmentTargetSchema.Type;
+
+/** Stable pointer to one provider sandbox; safe to persist. */
+export const DesktopSandboxRefSchema = Schema.Struct({
+  providerId: DesktopSandboxProviderIdSchema,
+  sandboxId: Schema.String,
+});
+export type DesktopSandboxRef = typeof DesktopSandboxRefSchema.Type;
+
+/**
+ * A running `t3 serve` in a sandbox, in the shape the SSH flow hands the
+ * client (`DesktopSshEnvironmentBootstrap`): its URLs are desktop main's
+ * loopback forward, which adds the provider's headers.
+ */
+export const DesktopSandboxEnvironmentBootstrapSchema = Schema.Struct({
+  target: DesktopSandboxEnvironmentTargetSchema,
+  sandbox: DesktopSandboxRefSchema,
+  httpBaseUrl: Schema.String,
+  wsBaseUrl: Schema.String,
+  /** The provider's own URL for the server, to show the user. Clients never connect to it. */
+  providerUrl: Schema.String,
+  /** One-time pairing credential for `/oauth/token`. Secret. */
+  pairingToken: Schema.String,
+});
+export type DesktopSandboxEnvironmentBootstrap =
+  typeof DesktopSandboxEnvironmentBootstrapSchema.Type;
+
+export const DesktopSandboxEnvironmentStageSchema = Schema.Literals([
+  "credentials",
+  "create",
+  "resume",
+  "install",
+  "launch",
+  "expose",
+  "probe",
+  "pair",
+  "stop",
+  "destroy",
+]);
+export type DesktopSandboxEnvironmentStage = typeof DesktopSandboxEnvironmentStageSchema.Type;
+
+export const DesktopSandboxProviderFailureSchema = Schema.Literals([
+  "unauthorized",
+  "not-found",
+  "quota-exceeded",
+  "timeout",
+  "unsupported",
+  "network",
+  "provider-error",
+]);
+export type DesktopSandboxProviderFailure = typeof DesktopSandboxProviderFailureSchema.Type;
+
+export const DesktopSandboxEnvironmentFailedType = "sandbox-environment-failed" as const;
+
+/**
+ * A sandbox operation that failed, returned as a value so its stage and
+ * failure kind survive IPC. `detail` is secret-free; `sandbox` is set once a
+ * sandbox exists, since a failed provision leaves it for retry or deletion.
+ */
+export const DesktopSandboxEnvironmentFailureSchema = Schema.Struct({
+  type: Schema.Literal(DesktopSandboxEnvironmentFailedType),
+  stage: DesktopSandboxEnvironmentStageSchema,
+  failure: Schema.optionalKey(DesktopSandboxProviderFailureSchema),
+  detail: Schema.String,
+  sandbox: Schema.optionalKey(DesktopSandboxRefSchema),
+});
+export type DesktopSandboxEnvironmentFailure = typeof DesktopSandboxEnvironmentFailureSchema.Type;
+
+export const DesktopSandboxEnvironmentStoppedType = "sandbox-environment-stopped" as const;
+
+/** A reconnect that found the sandbox stopped and was not allowed to start it. */
+export const DesktopSandboxEnvironmentStoppedSchema = Schema.Struct({
+  type: Schema.Literal(DesktopSandboxEnvironmentStoppedType),
+  sandbox: DesktopSandboxRefSchema,
+});
+export type DesktopSandboxEnvironmentStopped = typeof DesktopSandboxEnvironmentStoppedSchema.Type;
+
+export const DesktopSandboxEnvironmentDoneType = "sandbox-environment-done" as const;
+
+export const DesktopSandboxEnvironmentEnsureInputSchema = Schema.Struct({
+  target: DesktopSandboxEnvironmentTargetSchema,
+  /** Retrying with the same key adopts the sandbox the first attempt created. */
+  idempotencyKey: TrimmedNonEmptyString,
+});
+export type DesktopSandboxEnvironmentEnsureInput =
+  typeof DesktopSandboxEnvironmentEnsureInputSchema.Type;
+
+export const DesktopSandboxEnvironmentEnsureResultSchema = Schema.Union([
+  DesktopSandboxEnvironmentBootstrapSchema,
+  DesktopSandboxEnvironmentFailureSchema,
+]);
+export type DesktopSandboxEnvironmentEnsureResult =
+  typeof DesktopSandboxEnvironmentEnsureResultSchema.Type;
+
+export const DesktopSandboxEnvironmentReconnectInputSchema = Schema.Struct({
+  target: DesktopSandboxEnvironmentTargetSchema,
+  sandbox: DesktopSandboxRefSchema,
+  /**
+   * Whether a stopped sandbox may be started. Automatic reconnects pass false
+   * so a sandbox the user stopped, or that stopped itself when idle, is not
+   * started (and billed) behind their back.
+   */
+  resume: Schema.Boolean,
+});
+export type DesktopSandboxEnvironmentReconnectInput =
+  typeof DesktopSandboxEnvironmentReconnectInputSchema.Type;
+
+export const DesktopSandboxEnvironmentReconnectResultSchema = Schema.Union([
+  DesktopSandboxEnvironmentBootstrapSchema,
+  DesktopSandboxEnvironmentFailureSchema,
+  DesktopSandboxEnvironmentStoppedSchema,
+]);
+export type DesktopSandboxEnvironmentReconnectResult =
+  typeof DesktopSandboxEnvironmentReconnectResultSchema.Type;
+
+export const DesktopSandboxEnvironmentActionResultSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal(DesktopSandboxEnvironmentDoneType) }),
+  DesktopSandboxEnvironmentFailureSchema,
+]);
+export type DesktopSandboxEnvironmentActionResult =
+  typeof DesktopSandboxEnvironmentActionResultSchema.Type;
+
+/**
+ * A provider credential on its way into the desktop's secure storage. The
+ * desktop never returns it; `hasSandboxProviderCredential` only says whether
+ * one is stored.
+ */
+export const DesktopSandboxProviderCredentialInputSchema = Schema.Struct({
+  providerId: DesktopSandboxProviderIdSchema,
+  /** boat API key. Secret. */
+  secret: TrimmedNonEmptyString,
+});
+export type DesktopSandboxProviderCredentialInput =
+  typeof DesktopSandboxProviderCredentialInputSchema.Type;
 
 export const PersistedSavedEnvironmentRecordSchema = Schema.Struct({
   environmentId: EnvironmentId,
@@ -1092,6 +1262,25 @@ export interface DesktopBridge {
   ) => Promise<AuthWebSocketTicketResult>;
   onSshPasswordPrompt: (listener: (request: DesktopSshPasswordPromptRequest) => void) => () => void;
   resolveSshPasswordPrompt: (requestId: string, password: string | null) => Promise<void>;
+  /**
+   * Cloud sandbox environments, provisioned from the desktop main process so
+   * provider API keys never leave it. Optional: older desktop builds lack them.
+   */
+  ensureSandboxEnvironment?: (
+    input: DesktopSandboxEnvironmentEnsureInput,
+  ) => Promise<DesktopSandboxEnvironmentEnsureResult>;
+  reconnectSandboxEnvironment?: (
+    input: DesktopSandboxEnvironmentReconnectInput,
+  ) => Promise<DesktopSandboxEnvironmentReconnectResult>;
+  stopSandboxEnvironment?: (
+    sandbox: DesktopSandboxRef,
+  ) => Promise<DesktopSandboxEnvironmentActionResult>;
+  destroySandboxEnvironment?: (
+    sandbox: DesktopSandboxRef,
+  ) => Promise<DesktopSandboxEnvironmentActionResult>;
+  setSandboxProviderCredential?: (input: DesktopSandboxProviderCredentialInput) => Promise<void>;
+  clearSandboxProviderCredential?: (providerId: DesktopSandboxProviderId) => Promise<void>;
+  hasSandboxProviderCredential?: (providerId: DesktopSandboxProviderId) => Promise<boolean>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
   setTailscaleServeEnabled: (input: {
@@ -1135,6 +1324,10 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  /** Optional: only this build's desktop shell can copy the official app's data. */
+  getT3DataImport?: () => Promise<DesktopT3DataImportState>;
+  /** Resolves before the app relaunches to run the copy. */
+  importT3Data?: (input: DesktopT3DataImportInput) => Promise<void>;
   cliCommand?: {
     getState: () => Promise<DesktopCliCommandState>;
     install: () => Promise<DesktopCliCommandState>;

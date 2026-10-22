@@ -357,6 +357,21 @@ import {
 } from "./scheduledTask.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
+  BoatVmCancelLaunchInput,
+  BoatVmCancelLaunchResult,
+  BoatVmBringHomeInput,
+  BoatVmBringHomeResult,
+  BoatVmCatalog,
+  BoatVmError,
+  BoatVmLaunchInput,
+  BoatVmLaunchListEvent,
+  BoatVmLaunchResult,
+  BoatVmListResult,
+  BoatVmSaveSnapshotInput,
+  BoatVmSnapshotState,
+  BoatVmSnapshotStatusInput,
+} from "./boatVms.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -562,6 +577,14 @@ export const WS_METHODS = {
   sourceControlCloneRepository: "sourceControl.cloneRepository",
   sourceControlPublishRepository: "sourceControl.publishRepository",
   projectCloneStart: "projectClone.start",
+  boatVmsList: "boatVms.list",
+  boatVmsLaunch: "boatVms.launch",
+  boatVmsBringHome: "boatVms.bringHome",
+  boatVmsCatalog: "boatVms.catalog",
+  boatVmsSaveSnapshot: "boatVms.saveSnapshot",
+  boatVmsSnapshotStatus: "boatVms.snapshotStatus",
+  boatVmsCancelLaunch: "boatVms.cancelLaunch",
+  subscribeBoatVmLaunches: "subscribeBoatVmLaunches",
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
   subscribeProjectClones: "subscribeProjectClones",
@@ -1165,6 +1188,61 @@ const WsSourceControlCloneRepositoryRpc = Rpc.make(WS_METHODS.sourceControlClone
   payload: SourceControlCloneRepositoryInput,
   success: SourceControlCloneRepositoryResult,
   error: Schema.Union([SourceControlRepositoryError, EnvironmentAuthorizationError]),
+});
+
+const WsBoatVmsListRpc = Rpc.make(WS_METHODS.boatVmsList, {
+  payload: Schema.Struct({}),
+  success: BoatVmListResult,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// Returns once the VM is on the tailnet with `t3 serve` up and the repository pulled.
+const WsBoatVmsLaunchRpc = Rpc.make(WS_METHODS.boatVmsLaunch, {
+  payload: BoatVmLaunchInput,
+  success: BoatVmLaunchResult,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// Fetches the VM's branches into this environment's checkout under refs/t3/boat/; never pushes.
+const WsBoatVmsBringHomeRpc = Rpc.make(WS_METHODS.boatVmsBringHome, {
+  payload: BoatVmBringHomeInput,
+  success: BoatVmBringHomeResult,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// The boat account's named snapshots and environments, for pickers.
+const WsBoatVmsCatalogRpc = Rpc.make(WS_METHODS.boatVmsCatalog, {
+  payload: Schema.Struct({}),
+  success: BoatVmCatalog,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// Starts saving a VM as a named snapshot; poll snapshotStatus until ready or failed.
+const WsBoatVmsSaveSnapshotRpc = Rpc.make(WS_METHODS.boatVmsSaveSnapshot, {
+  payload: BoatVmSaveSnapshotInput,
+  success: BoatVmSnapshotState,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+const WsBoatVmsSnapshotStatusRpc = Rpc.make(WS_METHODS.boatVmsSnapshotStatus, {
+  payload: BoatVmSnapshotStatusInput,
+  success: BoatVmSnapshotState,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// Interrupts a running launch; a new VM it made is removed, a resumed one is kept.
+const WsBoatVmsCancelLaunchRpc = Rpc.make(WS_METHODS.boatVmsCancelLaunch, {
+  payload: BoatVmCancelLaunchInput,
+  success: BoatVmCancelLaunchResult,
+  error: EnvironmentAuthorizationError,
+});
+
+// Every launch in progress, and ones that just ended, each time one changes stage.
+const WsSubscribeBoatVmLaunchesRpc = Rpc.make(WS_METHODS.subscribeBoatVmLaunches, {
+  payload: Schema.Struct({}),
+  success: BoatVmLaunchListEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
 });
 
 // Clone-backed project creation. `start` returns once the project exists and
@@ -1983,6 +2061,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
   WsProjectCloneStartRpc,
+  WsBoatVmsListRpc,
+  WsBoatVmsLaunchRpc,
+  WsBoatVmsBringHomeRpc,
+  WsBoatVmsCatalogRpc,
+  WsBoatVmsSaveSnapshotRpc,
+  WsBoatVmsSnapshotStatusRpc,
+  WsBoatVmsCancelLaunchRpc,
+  WsSubscribeBoatVmLaunchesRpc,
   WsProjectCloneCancelRpc,
   WsProjectCloneRetryRpc,
   WsSubscribeProjectClonesRpc,

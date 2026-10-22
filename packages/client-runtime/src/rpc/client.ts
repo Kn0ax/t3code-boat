@@ -72,6 +72,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.subscribeWorktreeSetup
   | typeof WS_METHODS.subscribeProjectClones
+  | typeof WS_METHODS.subscribeBoatVmLaunches
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.terminalObserve;
 

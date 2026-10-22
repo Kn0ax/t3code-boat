@@ -1,9 +1,18 @@
-import type { ServerConfig } from "@t3tools/contracts";
+import {
+  type EnvironmentMachineKind,
+  type ServerConfig,
+  resolveEnvironmentMachineKind,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import type { ConnectionTarget, SupervisorConnectionState } from "./model.ts";
-import { connectionRouteId, connectionRoutes, routeHttpBaseUrl } from "./routes.ts";
+import {
+  connectionRouteId,
+  connectionRoutes,
+  hasSandboxRoute,
+  routeHttpBaseUrl,
+} from "./routes.ts";
 
 export type EnvironmentConnectionPhase =
   | "available"
@@ -101,7 +110,8 @@ export function presentEnvironmentConnection(
 }
 
 /**
- * SSH connections ride a local forward that disappears with the client, so they have no stable
+ * SSH and cloud sandbox connections ride a local forward that disappears with the client, so they
+ * have no stable
  * address.
  */
 export function environmentMcpUrl(input: {
@@ -152,5 +162,24 @@ export function connectionCatalogDisplayUrl(entry: ConnectionCatalogEntry): stri
       return Option.isSome(entry.profile) && entry.profile.value._tag === "SshConnectionProfile"
         ? `${entry.profile.value.target.username}@${entry.profile.value.target.hostname}`
         : null;
+    case "SandboxConnectionTarget":
+      return Option.isSome(entry.profile) && entry.profile.value._tag === "SandboxConnectionProfile"
+        ? entry.profile.value.providerUrl
+        : null;
   }
+}
+
+/**
+ * The icon an environment wears: the one picked in its settings, else
+ * "cloud" for a cloud sandbox (a container reports no useful hardware), else
+ * the machine its server detected.
+ */
+export function resolveConnectionMachineKind(
+  entry: Pick<ConnectionCatalogEntry, "target" | "alternateRoutes"> | null | undefined,
+  config: Parameters<typeof resolveEnvironmentMachineKind>[0],
+): EnvironmentMachineKind {
+  if (entry !== null && entry !== undefined && hasSandboxRoute(entry)) {
+    return config?.settings?.environmentIcon ?? "cloud";
+  }
+  return resolveEnvironmentMachineKind(config);
 }

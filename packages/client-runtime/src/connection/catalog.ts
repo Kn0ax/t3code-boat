@@ -1,4 +1,9 @@
-import { DesktopSshEnvironmentTargetSchema, EnvironmentId } from "@t3tools/contracts";
+import {
+  DesktopSandboxEnvironmentTargetSchema,
+  DesktopSandboxRefSchema,
+  DesktopSshEnvironmentTargetSchema,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -6,6 +11,7 @@ import {
   BearerConnectionTarget,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SandboxConnectionTarget,
   SshConnectionTarget,
   type ConnectionTarget,
 } from "./model.ts";
@@ -20,6 +26,15 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
   "BearerConnectionProfile",
   {
     ...ConnectionProfileBase,
+    boatProxy: Schema.optionalKey(
+      Schema.Struct({
+        sandboxId: Schema.String,
+        tailnetHttpBaseUrl: Schema.optionalKey(Schema.String),
+      }),
+    ),
+    boatVm: Schema.optionalKey(
+      Schema.Struct({ sandboxId: Schema.String, hostEnvironmentId: EnvironmentId }),
+    ),
     httpBaseUrl: Schema.String,
     wsBaseUrl: Schema.String,
     learned: Schema.optionalKey(Schema.Literal(true)),
@@ -40,7 +55,27 @@ export class SshConnectionProfile extends Schema.TaggedClass<SshConnectionProfil
   },
 ) {}
 
-export const ConnectionProfile = Schema.Union([BearerConnectionProfile, SshConnectionProfile]);
+/**
+ * A cloud sandbox route. `target` is what the user chose, `sandbox` the
+ * provider sandbox it created, and `providerUrl` the provider's URL for its
+ * server, shown to the user. Like SSH, the route connects only through the
+ * desktop: each connect gets a fresh loopback forward and pairing token.
+ */
+export class SandboxConnectionProfile extends Schema.TaggedClass<SandboxConnectionProfile>()(
+  "SandboxConnectionProfile",
+  {
+    ...ConnectionProfileBase,
+    target: DesktopSandboxEnvironmentTargetSchema,
+    sandbox: DesktopSandboxRefSchema,
+    providerUrl: Schema.String,
+  },
+) {}
+
+export const ConnectionProfile = Schema.Union([
+  BearerConnectionProfile,
+  SshConnectionProfile,
+  SandboxConnectionProfile,
+]);
 export type ConnectionProfile = typeof ConnectionProfile.Type;
 
 export interface ConnectionRoute {
@@ -61,6 +96,7 @@ export class BearerConnectionCredential extends Schema.TaggedClass<BearerConnect
   "BearerConnectionCredential",
   {
     token: Schema.String,
+    proxyToken: Schema.optionalKey(Schema.String),
   },
 ) {}
 
@@ -100,10 +136,19 @@ export class SshConnectionRegistration extends Schema.TaggedClass<SshConnectionR
   },
 ) {}
 
+export class SandboxConnectionRegistration extends Schema.TaggedClass<SandboxConnectionRegistration>()(
+  "SandboxConnectionRegistration",
+  {
+    target: SandboxConnectionTarget,
+    profile: SandboxConnectionProfile,
+  },
+) {}
+
 export const ConnectionRegistration = Schema.Union([
   RelayConnectionRegistration,
   BearerConnectionRegistration,
   SshConnectionRegistration,
+  SandboxConnectionRegistration,
 ]);
 export type ConnectionRegistration = typeof ConnectionRegistration.Type;
 
@@ -132,6 +177,7 @@ export function connectionRegistrationCatalogEntry(
       };
     case "BearerConnectionRegistration":
     case "SshConnectionRegistration":
+    case "SandboxConnectionRegistration":
       return {
         target: registration.target,
         profile: Option.some(registration.profile),

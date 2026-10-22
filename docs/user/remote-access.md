@@ -190,6 +190,79 @@ again on its next connect.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
+## Cloud sandboxes
+
+T3 Code runs sandboxes on [boat](https://boat.dev). There are three ways to use
+one, and they do not share a saved key. Setup for each is in
+[Cloud sandboxes](./cloud-sandboxes.md).
+
+A sandbox the desktop app adds under **Settings → Connections** connects through
+that app, like an SSH environment. A sandbox job is a node an agent starts, and
+its key lives on the T3 Code server. A boat VM is a machine a new thread can
+run on, reached over Tailscale.
+
+### Sandbox jobs
+
+Agents can also hand work to a cloud sandbox of their own. Turn on **Settings →
+Integrations → Sandbox jobs** and save a provider key and an agent key there:
+an Anthropic key or Claude Code OAuth token for Claude, an OpenAI key for Codex.
+These keys are saved on the T3 Code server, so jobs work from any client and
+without the desktop app.
+
+Ask an agent to run something in a sandbox job. It gets a copy of your
+workspace, including uncommitted changes, and the job's sandbox keeps its disk
+between messages. When it has been idle for the time you set, the sandbox stops
+and starts again on the next message. A job ends only when it is completed,
+which brings the work back into your repository without touching your checkout
+(on a branch when the agent names one), or discarded. Each job bills your provider account until then, so ask the agent to
+list open jobs and complete or discard the ones you no longer need.
+
+To send Claude and Codex in sandboxes and boat VMs through your own
+Anthropic- and OpenAI-compatible proxy, such as CLIProxyAPI or LiteLLM, save its
+URL and key under **Model proxy**; they are used instead of the agent keys.
+**Git identity** sets the name and email on commits made there. Pushing to
+GitHub from a sandbox or VM is off until you turn on **Sandboxes and VMs may
+push**, even with a GitHub token that can write, so you can bring work home
+and push it from your own machine.
+
+### boat VMs
+
+With a boat key, a Tailscale auth key and HTTPS turned on for your tailnet,
+all saved in **Settings → Integrations → Sandbox jobs**, a new thread in a
+repository can run on a boat VM. Pick **New boat VM** in the thread's **Run on**
+menu, or one of your earlier boat VMs. A new VM starts from your boat snapshot
+named `t3-<owner>-<repo>` (lowercase), else from `t3-base`, else from a plain VM.
+It joins your tailnet, pulls the repository into `~/work/<repo>` (cloning it the
+first time) and is added as a machine. To make a snapshot, set a VM up the way
+you want and run `boat snapshot <vm-id> t3-<owner>-<repo>`. Save a GitHub token
+there too for private repositories.
+
+New VMs use the size picked in the **boat VMs** row, small by default, separate
+from the size of sandbox jobs.
+
+The keys saved in Sandbox jobs reach a VM each time it starts and are not kept
+on its disk, so a snapshot does not carry them. A VM made from a snapshot also
+starts as a machine of its own, without the source VM's threads, pairings or
+tailnet identity. Anything else you put on the disk is in the snapshot,
+including tools you signed in to by hand on the VM.
+
+Use a reusable, ephemeral Tailscale auth key. A VM you delete then leaves no
+machine behind in your tailnet, and an archived VM joins again when it resumes.
+
+If the VM's checkout has uncommitted changes or cannot fast-forward, T3 Code
+leaves it as it is and tells you when the VM is ready.
+
+A boat VM archives itself once nothing has happened on it for the minutes you
+set, 30 by default, and keeps its disk. Picking it again in **Run on** resumes it.
+Only the T3 Code server holding the boat key keeps its VMs up, so run it on an
+always-on machine: a VM started from a desktop app's environment archives when
+that computer sleeps or the app quits, even mid-turn.
+
+To get a VM's commits onto your machine, run **Bring boat VM work home** from
+the command palette and pick the VM. Its branches land in your local checkout of
+the same repository as `refs/t3/boat/<vm-id>/<branch>`; nothing is pushed, so you
+can check them out, sign and push from there. Uncommitted changes stay on the VM.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same

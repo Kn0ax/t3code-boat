@@ -50,6 +50,7 @@ import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
+import { preparedDirectHttpBaseUrl } from "@t3tools/client-runtime/connection";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { usePreparedConnection } from "../../state/session";
@@ -1173,7 +1174,7 @@ function WebhookScheduleDetails({
   });
   const preparedConnection = usePreparedConnection(environmentId);
   const httpBaseUrl =
-    preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null;
+    preparedConnection._tag === "Some" ? preparedDirectHttpBaseUrl(preparedConnection.value) : null;
   const webhook = task?.schedule.type === "webhook" ? task.webhook : undefined;
   const resolved = webhook ? webhookAddress(webhook, httpBaseUrl) : null;
   return (

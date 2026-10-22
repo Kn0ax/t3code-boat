@@ -43,6 +43,8 @@ vi.mock("../../state/environments", () => {
     usePrimaryEnvironment: () => environment,
   };
 });
+vi.mock("../../state/boatVmHost", () => ({ useBoatVmHostEnvironmentId: () => null }));
+vi.mock("../../state/boatSnapshots", () => ({ useBoatCatalog: () => ({ state: "no-key" }) }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
     providersValueAtom: () => [],

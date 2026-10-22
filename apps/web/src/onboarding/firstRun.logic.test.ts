@@ -199,6 +199,31 @@ describe("resolveFirstRunDecision", () => {
   });
 });
 
+describe("resolveFirstRunDecision with data copied from the official app", () => {
+  const populated = { ...freshWorkspace, workspaceFresh: false, projectCount: 4, threadCount: 9 };
+
+  it("still opens the wizard when the copied projects make the workspace look used", () => {
+    expect(resolveFirstRunDecision({ ...populated, importedData: true })).toEqual({
+      decision: "wizard",
+      persistCompletion: false,
+    });
+  });
+
+  it("waits until it knows whether data was copied", () => {
+    expect(resolveFirstRunDecision({ ...populated, importedData: "pending" })).toEqual({
+      decision: "pending",
+      persistCompletion: false,
+    });
+  });
+
+  it("leaves a completed or uncopied install alone", () => {
+    expect(
+      resolveFirstRunDecision({ ...populated, completed: true, importedData: "pending" }),
+    ).toEqual({ decision: "app", persistCompletion: false });
+    expect(resolveFirstRunDecision({ ...populated, importedData: false }).decision).toBe("app");
+  });
+});
+
 describe("isFirstRunWorkspaceProvenanceAuthoritative", () => {
   it("waits for cwd bootstrap when the initial catalog is empty", () => {
     expect(

@@ -32,6 +32,8 @@ import {
   type ConnectionRoute,
   PrimaryConnectionRegistration,
   RelayConnectionRegistration,
+  SandboxConnectionProfile,
+  SandboxConnectionRegistration,
   SshConnectionProfile,
   SshConnectionRegistration,
   type ConnectionCredential,
@@ -48,6 +50,7 @@ import {
   BearerConnectionTarget,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SandboxConnectionTarget,
   SshConnectionTarget,
   type ConnectionTarget,
   type PreparedConnection,
@@ -133,6 +136,27 @@ const SSH_PROFILE = new SshConnectionProfile({
   environmentId: SSH_CONNECTION.environmentId,
   label: SSH_CONNECTION.label,
   target: SSH_TARGET,
+});
+
+const SANDBOX_CONNECTION = new SandboxConnectionTarget({
+  environmentId: EnvironmentId.make("environment-sandbox"),
+  label: "Sandbox environment",
+  connectionId: "sandbox-connection",
+});
+const SANDBOX_PROFILE = new SandboxConnectionProfile({
+  connectionId: SANDBOX_CONNECTION.connectionId,
+  environmentId: SANDBOX_CONNECTION.environmentId,
+  label: SANDBOX_CONNECTION.label,
+  target: {
+    providerId: "boat",
+    label: "Sandbox environment",
+    size: "medium",
+    idleTimeoutMinutes: 30,
+    installAgentClis: true,
+    forwardGithubToken: false,
+  },
+  sandbox: { providerId: "boat", sandboxId: "sandbox-1" },
+  providerUrl: "https://3773-sandbox-1.daytonaproxy01.net",
 });
 
 const CACHED_SNAPSHOT: OrchestrationV2ShellSnapshot = {
@@ -228,6 +252,13 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
               return next;
             });
             return;
+          case "SandboxConnectionRegistration":
+            yield* Ref.update(storedProfiles, (current) => {
+              const next = new Map(current);
+              next.set(registration.profile.connectionId, registration.profile);
+              return next;
+            });
+            return;
         }
       }),
     setRoutes: (environmentId, routes) =>
@@ -242,7 +273,11 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
           current.filter((target) => target.environmentId !== environmentId),
         );
         for (const target of removed) {
-          if (target._tag === "BearerConnectionTarget" || target._tag === "SshConnectionTarget") {
+          if (
+            target._tag === "BearerConnectionTarget" ||
+            target._tag === "SshConnectionTarget" ||
+            target._tag === "SandboxConnectionTarget"
+          ) {
             yield* Ref.update(storedProfiles, (current) => {
               const next = new Map(current);
               next.delete(target.connectionId);
@@ -576,6 +611,25 @@ describe("EnvironmentRegistry", () => {
 
         expect(entry?.target).toEqual(SSH_CONNECTION);
         expect(Option.getOrThrow(entry?.profile ?? Option.none())).toEqual(SSH_PROFILE);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("hydrates a cloud sandbox route with its saved profile", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([SANDBOX_CONNECTION], [SANDBOX_PROFILE]);
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const entry = (yield* SubscriptionRef.get(registry.entries)).get(
+          SANDBOX_CONNECTION.environmentId,
+        );
+
+        expect(entry?.target).toEqual(SANDBOX_CONNECTION);
+        expect(Option.getOrThrow(entry?.profile ?? Option.none())).toEqual(SANDBOX_PROFILE);
+        expect(connectionRouteKind({ target: entry!.target, profile: entry!.profile })).toBe(
+          "sandbox",
+        );
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
@@ -2139,6 +2193,33 @@ describe("EnvironmentRegistry routes", () => {
           ).toEqual([again]);
         }).pipe(Effect.provide(harness.layer), Effect.scoped);
       }),
+  );
+
+  it.effect("adding the same cloud sandbox again replaces its route, even at a new URL", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([SANDBOX_CONNECTION], [SANDBOX_PROFILE]);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const again = new SandboxConnectionTarget({
+          ...SANDBOX_CONNECTION,
+          connectionId: "sandbox-connection-new-id",
+        });
+        yield* registry.register(
+          new SandboxConnectionRegistration({
+            target: again,
+            profile: new SandboxConnectionProfile({
+              ...SANDBOX_PROFILE,
+              connectionId: again.connectionId,
+              providerUrl: "https://3773-sandbox-1.daytonaproxy02.net",
+            }),
+          }),
+        );
+
+        expect(
+          routesOf(yield* Ref.get(harness.storedTargets), SANDBOX_CONNECTION.environmentId),
+        ).toEqual([again]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
   );
 
   it.effect("signing out of T3 Connect keeps an environment that still has a LAN route", () =>

@@ -6,7 +6,10 @@ import type {
 import { isLoopbackHost, normalizePreviewUrl } from "@t3tools/shared/preview";
 import { isLocalLoopbackHost, isPrivateNetworkHost } from "@t3tools/shared/hostClassification";
 
-import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
+import {
+  preparedDirectHttpBaseUrl,
+  type ConnectionTarget,
+} from "@t3tools/client-runtime/connection";
 
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { isElectron } from "~/env";
@@ -22,7 +25,13 @@ export {
 const readEnvironmentUrl = (environmentId: EnvironmentId): URL => {
   const connection = readPreparedConnection(environmentId);
   if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
-  return new URL(connection.httpBaseUrl);
+  const direct = preparedDirectHttpBaseUrl(connection);
+  if (direct === null) {
+    throw new Error(
+      "This environment's ports need Tailscale. Add a Tailscale auth key or turn on the snapshot's Tailscale setup in Settings, then start the VM again.",
+    );
+  }
+  return new URL(direct);
 };
 
 const resolveEnvironmentPortTarget = (

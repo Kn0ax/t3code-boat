@@ -46,6 +46,8 @@ interface FirstRunDecisionInput {
   readonly workspaceFresh: boolean;
   readonly projectCount: number;
   readonly threadCount: number;
+  /** The desktop app copied data from the official app; "pending" while that is unknown. */
+  readonly importedData?: boolean | "pending";
 }
 
 export function isFirstRunWorkspaceProvenanceAuthoritative(input: {
@@ -114,8 +116,19 @@ export function resolveFirstRunDecision(input: FirstRunDecisionInput): {
     return { decision: "app", persistCompletion: false };
   }
 
-  if (!input.hydrated) {
+  if (!input.hydrated || input.importedData === "pending") {
     return { decision: "pending", persistCompletion: false };
+  }
+
+  // Copied projects are not a sign that setup already ran on this install.
+  if (input.importedData === true) {
+    return {
+      decision:
+        input.bootstrapped && input.catalogReady && input.serverConfigAvailable
+          ? "wizard"
+          : "pending",
+      persistCompletion: false,
+    };
   }
 
   if (input.projectCount > 1 || input.threadCount > 1) {

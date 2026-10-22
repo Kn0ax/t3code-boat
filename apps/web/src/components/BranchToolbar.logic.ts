@@ -20,6 +20,13 @@ export interface EnvironmentOption {
   label: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
+  /**
+   * Set on a boat VM entry: picking it starts that VM (null: a new one), so
+   * `environmentId` is only the entry's key until the VM is paired.
+   */
+  boatVm?: { readonly sandboxId: string | null };
+  /** Why the entry cannot be picked; shown under it instead of hiding it. */
+  disabledReason?: string;
 }
 
 /** "Add to another machine" stays muted until hovered: easy to find, quieter than the machines. */

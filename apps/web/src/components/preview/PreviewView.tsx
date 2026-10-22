@@ -46,6 +46,7 @@ import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
 import { useEnvironmentSupportsServerBrowser } from "~/state/entities";
 import {
   useEnvironment,
+  useEnvironmentDirectHttpBaseUrl,
   useEnvironmentHttpBaseUrl,
   usePrimaryEnvironmentId,
 } from "~/state/environments";
@@ -171,8 +172,9 @@ export function PreviewView({
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
-  const environmentHostname = environmentHttpBaseUrl
-    ? new URL(environmentHttpBaseUrl).hostname
+  const environmentDirectHttpBaseUrl = useEnvironmentDirectHttpBaseUrl(threadRef.environmentId);
+  const environmentHostname = environmentDirectHttpBaseUrl
+    ? new URL(environmentDirectHttpBaseUrl).hostname
     : null;
   const open = useAtomCommand(previewEnvironment.open);
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");

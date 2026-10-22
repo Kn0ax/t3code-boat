@@ -1,3 +1,4 @@
+import { boatProxySandboxId } from "./boatProxy.ts";
 import type {
   AdvertisedEndpoint,
   AdvertisedEndpointHostedHttpsCompatibility,
@@ -33,7 +34,7 @@ export function normalizeHttpBaseUrl(rawValue: string): string {
     throw new Error(`Endpoint must use HTTP or HTTPS. Received ${url.protocol}`);
   }
 
-  url.pathname = "/";
+  if (boatProxySandboxId(url.toString()) === undefined) url.pathname = "/";
   url.search = "";
   url.hash = "";
   return url.toString();

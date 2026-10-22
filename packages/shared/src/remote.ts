@@ -1,3 +1,4 @@
+import { boatProxySandboxId } from "./boatProxy.ts";
 import * as Schema from "effect/Schema";
 
 const PAIRING_TOKEN_PARAM = "token";
@@ -97,7 +98,7 @@ const normalizeRemoteBaseUrl = (
       protocol: url.protocol,
     });
   }
-  url.pathname = "/";
+  if (boatProxySandboxId(url.toString()) === undefined) url.pathname = "/";
   url.search = "";
   url.hash = "";
   return url;
@@ -110,7 +111,7 @@ const toHttpBaseUrl = (url: URL): string => {
   } else if (next.protocol === "wss:") {
     next.protocol = "https:";
   }
-  next.pathname = "/";
+  if (boatProxySandboxId(next.toString()) === undefined) next.pathname = "/";
   next.search = "";
   next.hash = "";
   return next.toString();
@@ -123,7 +124,7 @@ const toWsBaseUrl = (url: URL): string => {
   } else if (next.protocol === "https:") {
     next.protocol = "wss:";
   }
-  next.pathname = "/";
+  if (boatProxySandboxId(next.toString()) === undefined) next.pathname = "/";
   next.search = "";
   next.hash = "";
   return next.toString();

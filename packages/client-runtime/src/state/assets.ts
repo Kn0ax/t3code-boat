@@ -1,3 +1,5 @@
+import { boatProxySandboxId } from "@t3tools/shared/boatProxy";
+import { environmentEndpointUrl } from "../environment/endpoint.ts";
 import {
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
@@ -58,7 +60,10 @@ export function parseAssetCollectionKey(
 
 export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): string | null {
   try {
-    return new URL(relativeUrl, httpBaseUrl).toString();
+    return boatProxySandboxId(httpBaseUrl) !== undefined &&
+      !/^[a-zA-Z][a-zA-Z\d+.-]*:|^\/\//.test(relativeUrl)
+      ? environmentEndpointUrl(httpBaseUrl, relativeUrl)
+      : new URL(relativeUrl, httpBaseUrl).toString();
   } catch {
     return null;
   }
@@ -161,7 +166,10 @@ export function createAssetEnvironmentAtoms<R, E>(
     const asset = yield* registry
       .run(local.environmentId, request(WS_METHODS.assetsCreateUrl, input))
       .pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, () => error))));
-    return { ...asset, relativeUrl: new URL(asset.relativeUrl, local.httpBaseUrl).href };
+    return {
+      ...asset,
+      relativeUrl: resolveAssetUrl(local.httpBaseUrl, asset.relativeUrl) ?? asset.relativeUrl,
+    };
   });
   const createUrl = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:assets:create-url",

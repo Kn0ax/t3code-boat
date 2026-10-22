@@ -208,6 +208,7 @@ import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
+import * as BoatVmService from "./sandbox/BoatVmService.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -1250,6 +1251,7 @@ export const layerWsRpc = (
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+      const boatVms = yield* BoatVmService.BoatVmService;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
@@ -2548,6 +2550,14 @@ export const layerWsRpc = (
           sourceControlRepositories.lookupRepository(input),
         [WS_METHODS.sourceControlCloneRepository]: (input) =>
           sourceControlRepositories.cloneRepository(input),
+        [WS_METHODS.boatVmsList]: () => boatVms.list,
+        [WS_METHODS.boatVmsLaunch]: (input) => boatVms.launch(input),
+        [WS_METHODS.boatVmsBringHome]: (input) => boatVms.bringHome(input),
+        [WS_METHODS.boatVmsCatalog]: () => boatVms.catalog,
+        [WS_METHODS.boatVmsSaveSnapshot]: (input) => boatVms.saveSnapshot(input),
+        [WS_METHODS.boatVmsSnapshotStatus]: (input) => boatVms.snapshotStatus(input),
+        [WS_METHODS.boatVmsCancelLaunch]: (input) => boatVms.cancelLaunch(input),
+        [WS_METHODS.subscribeBoatVmLaunches]: () => boatVms.launches,
         [WS_METHODS.projectCloneStart]: (input) =>
           projectCloneTracker.start(input, {
             createProject: (project) =>
@@ -3137,6 +3147,7 @@ export const layer = Layer.unwrap(
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const boatVms = yield* BoatVmService.BoatVmService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3222,6 +3233,7 @@ export const layer = Layer.unwrap(
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(Layer.succeed(BoatVmService.BoatVmService, boatVms)),
               Layer.provide(OtlpEndpointCheck.layer),
               Layer.provide(
                 Layer.succeed(

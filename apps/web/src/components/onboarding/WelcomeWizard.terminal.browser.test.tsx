@@ -80,6 +80,9 @@ vi.mock(import("../../state/server"), async (original) => {
     },
   };
 });
+// The Boat step reads the managing host's config, which these tests register only for their own environments.
+vi.mock("../../state/boatVmHost", () => ({ useBoatVmHostEnvironmentId: () => primaryId }));
+vi.mock("../../state/boatSnapshots", () => ({ useBoatCatalog: () => ({ state: "no-key" }) }));
 vi.mock(import("../../state/terminal"), async (original) => ({
   ...(await original()),
   terminalEnvironment: { open: "open", write: "write", close: "close" } as never,

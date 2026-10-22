@@ -1,11 +1,8 @@
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import {
-  type EnvironmentId,
-  type ProjectId,
-  resolveEnvironmentMachineKind,
-} from "@t3tools/contracts";
+import { resolveConnectionMachineKind } from "@t3tools/client-runtime/connection";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import {
@@ -42,7 +39,7 @@ export function useLogicalProjectEnvironments(
       projectId,
       label: environment?.label ?? environmentId,
       isPrimary: environmentId === primaryEnvironmentId,
-      machine: resolveEnvironmentMachineKind(environment?.serverConfig ?? null),
+      machine: resolveConnectionMachineKind(environment?.entry, environment?.serverConfig ?? null),
     });
   };
   if (scratchDraft) {

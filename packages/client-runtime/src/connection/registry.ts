@@ -219,7 +219,9 @@ export const make = Effect.gen(function* () {
     target: ConnectionTarget,
   ) {
     const profile: Option.Option<ConnectionProfile> =
-      target._tag === "BearerConnectionTarget" || target._tag === "SshConnectionTarget"
+      target._tag === "BearerConnectionTarget" ||
+      target._tag === "SshConnectionTarget" ||
+      target._tag === "SandboxConnectionTarget"
         ? yield* profiles.get(target.connectionId)
         : Option.none();
     return { target, profile } satisfies ConnectionRoute;

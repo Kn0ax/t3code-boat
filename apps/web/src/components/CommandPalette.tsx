@@ -25,7 +25,10 @@ import {
   type AddProjectRemoteSourceReadiness,
 } from "@t3tools/client-runtime/operations/projects";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { connectionStatusText } from "@t3tools/client-runtime/connection";
+import {
+  connectionStatusText,
+  resolveConnectionMachineKind,
+} from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 import {
@@ -53,7 +56,6 @@ import {
   SourceControlProviderKind,
   type SourceControlRepositoryInfo,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
-  resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
@@ -61,6 +63,8 @@ import {
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
+  CloudDownloadIcon,
+  CloudUploadIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderGit2Icon,
@@ -117,6 +121,9 @@ import {
 } from "./settings/ThemePreviewCircles";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
+import { boatSnapshotEnvironment } from "../state/boatSnapshots";
+import { boatVmEnvironment, describeBroughtHome } from "../state/boatVms";
+import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
@@ -216,6 +223,7 @@ import { Checkbox } from "./ui/checkbox";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
+import { openSaveBoatSnapshotDialog, SaveBoatSnapshotDialogHost } from "./SaveBoatSnapshotDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { toggleThemeEditorForTheme } from "./settings/themeEditorStore";
 import { searchSettings, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
@@ -423,7 +431,7 @@ function useEnvironmentLookups() {
         {
           kind: isLocal ? "local" : "remote",
           label: isPrimary ? "Local" : isLocal ? `${environment.label} (Local)` : environment.label,
-          machine: resolveEnvironmentMachineKind(environment.serverConfig),
+          machine: resolveConnectionMachineKind(environment.entry, environment.serverConfig),
         },
       ] as const;
     }),
@@ -648,6 +656,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           clearOpenIntent={clearOpenIntent}
         />
       </CommandDialog>
+      <SaveBoatSnapshotDialogHost />
     </ComposerHandleContext>
   );
 }
@@ -763,9 +772,23 @@ function OpenCommandPaletteDialog(props: {
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const bringBoatVmHome = useAtomCommand(boatVmEnvironment.bringHome, {
+    reportFailure: false,
+  });
   const { environments } = useEnvironments();
   const desktopLocalBootstraps = useDesktopLocalBootstraps();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  // The environment managing boat VMs holds the boat key, as for "Run on".
+  const boatVmHostId = useBoatVmHostEnvironmentId();
+  const canBringBoatVmHome = useAtomValue(boatVmEnvironment.bringHome.permissionAtom(boatVmHostId));
+  const canSaveBoatSnapshot = useAtomValue(
+    boatSnapshotEnvironment.saveSnapshot.permissionAtom(boatVmHostId),
+  );
+  const boatVms = useEnvironmentQuery(
+    boatVmHostId === null || (!canBringBoatVmHome && !canSaveBoatSnapshot)
+      ? null
+      : boatVmEnvironment.list({ environmentId: boatVmHostId, input: {} }),
+  );
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
@@ -911,7 +934,7 @@ function OpenCommandPaletteDialog(props: {
             runtimeLabel: environment.label,
           }),
           isPrimary,
-          machine: resolveEnvironmentMachineKind(environment.serverConfig),
+          machine: resolveConnectionMachineKind(environment.entry, environment.serverConfig),
           isConnected: canCreateProjectInEnvironment(environment.connection.phase),
           status: connectionStatusText(environment.connection),
         };
@@ -1862,6 +1885,87 @@ function OpenCommandPaletteDialog(props: {
       run: async () => {
         await startAddProjectBrowse(wslAddProjectEnvironmentOption.environmentId);
       },
+    });
+  }
+
+  const homeBoundVms =
+    boatVms.data?.available === true
+      ? boatVms.data.vms.filter((vm) => vm.status !== "destroyed" && vm.status !== "error")
+      : [];
+  if (boatVmHostId !== null && canBringBoatVmHome && homeBoundVms.length > 0) {
+    actionItems.push({
+      kind: "submenu",
+      value: "action:bring-boat-vm-home",
+      searchTerms: ["boat", "vm", "bring home", "fetch", "branches", "sandbox", "cloud"],
+      title: "Bring boat VM work home",
+      icon: <CloudDownloadIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <CloudDownloadIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "boat-vms",
+          label: "boat VMs",
+          items: homeBoundVms.map((vm) => ({
+            kind: "action",
+            value: `boat-vm:bring-home:${vm.sandboxId}`,
+            title: vm.label,
+            description:
+              vm.status === "running" ? undefined : "Stopped; starts it to read its disk",
+            searchTerms: [vm.label, "boat", "vm"],
+            icon: <CloudDownloadIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              const toastId = toastManager.add({
+                type: "loading",
+                title: `Bringing ${vm.label} home`,
+              });
+              const brought = await bringBoatVmHome({
+                environmentId: boatVmHostId,
+                input: { sandboxId: vm.sandboxId },
+              });
+              if (brought._tag === "Failure") {
+                const failure = squashAtomCommandFailure(brought);
+                toastManager.update(toastId, {
+                  type: "error",
+                  title: `Could not bring ${vm.label} home`,
+                  description: failure instanceof Error ? failure.message : String(failure),
+                });
+                return;
+              }
+              toastManager.update(toastId, {
+                type: "success",
+                title: `Brought ${vm.label} home`,
+                description: describeBroughtHome(brought.value),
+              });
+            },
+          })),
+        },
+      ],
+    });
+  }
+
+  if (boatVmHostId !== null && canSaveBoatSnapshot && homeBoundVms.length > 0) {
+    actionItems.push({
+      kind: "submenu",
+      value: "action:save-boat-vm-snapshot",
+      searchTerms: ["boat", "vm", "snapshot", "save", "freeze", "image", "sandbox", "cloud"],
+      title: "Save boat VM as snapshot",
+      icon: <CloudUploadIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <CloudUploadIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "boat-vms",
+          label: "boat VMs",
+          items: homeBoundVms.map((vm) => ({
+            kind: "action",
+            value: `boat-vm:save-snapshot:${vm.sandboxId}`,
+            title: vm.label,
+            searchTerms: [vm.label, "boat", "vm", "snapshot"],
+            icon: <CloudUploadIcon className={ITEM_ICON_CLASS} />,
+            run: async () => {
+              openSaveBoatSnapshotDialog({ hostEnvironmentId: boatVmHostId, vm });
+            },
+          })),
+        },
+      ],
     });
   }
 

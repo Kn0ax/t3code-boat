@@ -1,6 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   type ConnectionRegistration,
@@ -17,7 +18,7 @@ export const StoredConnectionCredential = Schema.Struct({
 });
 export type StoredConnectionCredential = typeof StoredConnectionCredential.Type;
 
-export const ConnectionCatalogDocument = Schema.Struct({
+const CurrentConnectionCatalogDocument = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   targets: Schema.Array(PersistedConnectionTarget),
   profiles: Schema.Array(ConnectionProfile),
@@ -28,6 +29,46 @@ export const ConnectionCatalogDocument = Schema.Struct({
     Schema.withDecodingDefaultKey(Effect.succeed([])),
   ),
 });
+
+const isRetiredSandboxProfile = Schema.is(
+  Schema.TaggedStruct("SandboxConnectionProfile", {
+    connectionId: Schema.String,
+    target: Schema.Struct({ providerId: Schema.Literals(["daytona", "docker"]) }),
+  }),
+);
+const isCatalogRoute = Schema.is(Schema.Struct({ connectionId: Schema.String }));
+const isRawCatalogRoutes = Schema.is(
+  Schema.Struct({
+    targets: Schema.Array(Schema.Unknown),
+    profiles: Schema.Array(Schema.Unknown),
+    credentials: Schema.Array(Schema.Unknown),
+  }),
+);
+
+export const ConnectionCatalogDocument = Schema.Unknown.pipe(
+  Schema.decodeTo(
+    Schema.Unknown,
+    SchemaTransformation.transform({
+      decode: (raw) => {
+        if (!isRawCatalogRoutes(raw)) return raw;
+        // Retired providers must not invalidate unrelated saved connections on upgrade.
+        const retiredIds = new Set(
+          raw.profiles.filter(isRetiredSandboxProfile).map((profile) => profile.connectionId),
+        );
+        const keepRoute = (value: unknown) =>
+          !isCatalogRoute(value) || !retiredIds.has(value.connectionId);
+        return {
+          ...raw,
+          targets: raw.targets.filter(keepRoute),
+          profiles: raw.profiles.filter(keepRoute),
+          credentials: raw.credentials.filter(keepRoute),
+        };
+      },
+      encode: (value) => value,
+    }),
+  ),
+  Schema.decodeTo(CurrentConnectionCatalogDocument),
+);
 export type ConnectionCatalogDocument = typeof ConnectionCatalogDocument.Type;
 
 export const EMPTY_CONNECTION_CATALOG_DOCUMENT: ConnectionCatalogDocument = Object.freeze({
@@ -63,6 +104,7 @@ function connectionIdOf(target: ConnectionTarget): string | null {
       return null;
     case "BearerConnectionTarget":
     case "SshConnectionTarget":
+    case "SandboxConnectionTarget":
       return target.connectionId;
   }
 }
@@ -145,6 +187,15 @@ export function registerConnectionInCatalog(
           connectionId: registration.target.connectionId,
           credential: registration.credential,
         }),
+      };
+    case "SandboxConnectionRegistration":
+      return {
+        ...next,
+        profiles: replaceCatalogValue(
+          next.profiles,
+          (value) => value.connectionId,
+          registration.profile,
+        ),
       };
   }
 }

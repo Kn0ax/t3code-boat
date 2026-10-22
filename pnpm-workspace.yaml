@@ -218,6 +218,7 @@ minimumReleaseAgeExclude:
   - "@react-native/virtualized-lists@0.88.0"
   - react-native-svg@15.16.0
   - "@expo/schema-utils@58.0.2"
+  - "@boatdev/sdk@1.9.4"
 
 overrides:
   # Keep on the patched version. A fresh resolution would take a newer release and

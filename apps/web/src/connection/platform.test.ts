@@ -3,6 +3,9 @@ import {
   EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   type DesktopBridge,
+  type DesktopSandboxEnvironmentBootstrap,
+  type DesktopSandboxEnvironmentFailure,
+  type DesktopSandboxEnvironmentReconnectInput,
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
@@ -22,7 +25,10 @@ import {
   layer,
   isRejectedBootstrapCredentialError,
   isRejectedSecondaryBootstrap,
+  makeDesktopSandboxGateway,
   nextRejectedSecondaryBootstrap,
+  SANDBOX_STOPPED_DETAIL,
+  sandboxFailureError,
   primaryRegistrationToRetainAfterTopologyRead,
   prepareDesktopSshEnvironment,
   provisionDesktopSshEnvironment,
@@ -508,4 +514,201 @@ describe("primary topology cache", () => {
       }),
     ).toBeUndefined();
   });
+});
+
+const SANDBOX_TARGET = {
+  providerId: "boat",
+  label: "Agent box",
+  size: "medium",
+  idleTimeoutMinutes: 30,
+  installAgentClis: true,
+  forwardGithubToken: false,
+} as const;
+const SANDBOX = { providerId: "boat", sandboxId: "sandbox-1" } as const;
+
+function sandboxBootstrap(pairingToken: string): DesktopSandboxEnvironmentBootstrap {
+  return {
+    target: SANDBOX_TARGET,
+    sandbox: SANDBOX,
+    httpBaseUrl: "http://127.0.0.1:4100/",
+    wsBaseUrl: "ws://127.0.0.1:4100/",
+    providerUrl: "https://3773-sandbox-1.daytonaproxy01.net",
+    pairingToken,
+  };
+}
+
+function makeSandboxBridge(
+  reconnects: Array<DesktopSandboxEnvironmentReconnectInput>,
+  status: "running" | "stopped",
+): DesktopBridge {
+  let minted = 0;
+  return {
+    ensureSandboxEnvironment: async () => sandboxBootstrap("provisioned"),
+    reconnectSandboxEnvironment: async (input: DesktopSandboxEnvironmentReconnectInput) => {
+      reconnects.push(input);
+      if (status === "stopped" && !input.resume) {
+        return { type: "sandbox-environment-stopped", sandbox: input.sandbox };
+      }
+      minted += 1;
+      return sandboxBootstrap(`token-${minted}`);
+    },
+    stopSandboxEnvironment: async () => ({ type: "sandbox-environment-done" }),
+    destroySandboxEnvironment: async () => ({
+      type: "sandbox-environment-failed",
+      stage: "destroy",
+      failure: "not-found",
+      detail: "Daytona could not find the sandbox; it may have been deleted.",
+      sandbox: SANDBOX,
+    }),
+  } as unknown as DesktopBridge;
+}
+
+describe("desktop cloud sandbox gateway", () => {
+  it("blocks on failures a retry cannot fix and retries the rest", () => {
+    const failure = (failure?: "unauthorized" | "quota-exceeded" | "timeout" | "provider-error") =>
+      sandboxFailureError({
+        type: "sandbox-environment-failed",
+        stage: "launch",
+        detail: "detail",
+        ...(failure === undefined ? {} : { failure }),
+      });
+    expect(failure("unauthorized")).toMatchObject({
+      _tag: "ConnectionBlockedError",
+      reason: "authentication",
+    });
+    expect(failure("quota-exceeded")).toMatchObject({
+      _tag: "ConnectionBlockedError",
+      reason: "permission",
+    });
+    expect(failure("timeout")).toMatchObject({
+      _tag: "ConnectionTransientError",
+      reason: "timeout",
+    });
+    expect(failure("provider-error")).toMatchObject({ _tag: "ConnectionTransientError" });
+    expect(
+      sandboxFailureError({
+        type: "sandbox-environment-failed",
+        stage: "credentials",
+        detail: "Docker Sandboxes needs your Docker username as well as the access token.",
+      }),
+    ).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+  });
+
+  it.effect("never resumes a stopped sandbox on an automatic reconnect", () =>
+    Effect.gen(function* () {
+      const reconnects: Array<DesktopSandboxEnvironmentReconnectInput> = [];
+      const bridge = makeSandboxBridge(reconnects, "stopped");
+      const gateway = makeDesktopSandboxGateway(() => bridge);
+
+      const error = yield* Effect.flip(
+        gateway.prepare({
+          connectionId: "sandbox-1",
+          expectedEnvironmentId: EnvironmentId.make("environment-sandbox"),
+          target: SANDBOX_TARGET,
+          sandbox: SANDBOX,
+        }),
+      );
+
+      expect(error).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+      expect(error.message).toBe(SANDBOX_STOPPED_DETAIL);
+      expect(reconnects.map((input) => input.resume)).toEqual([false]);
+    }),
+  );
+
+  it.effect("pairs with the token a resume minted instead of launching again", () =>
+    Effect.gen(function* () {
+      const reconnects: Array<DesktopSandboxEnvironmentReconnectInput> = [];
+      const bridge = makeSandboxBridge(reconnects, "stopped");
+      const gateway = makeDesktopSandboxGateway(() => bridge);
+      const prepare = gateway.prepare({
+        connectionId: "sandbox-1",
+        expectedEnvironmentId: EnvironmentId.make("environment-sandbox"),
+        target: SANDBOX_TARGET,
+        sandbox: SANDBOX,
+      });
+
+      yield* gateway.resume({ target: SANDBOX_TARGET, sandbox: SANDBOX });
+      const resumed = yield* prepare;
+
+      expect(resumed.pairingToken).toBe("token-1");
+      expect(reconnects.map((input) => input.resume)).toEqual([true]);
+      // The minted token is used once; the next reconnect asks the desktop again.
+      yield* Effect.flip(prepare);
+      expect(reconnects.map((input) => input.resume)).toEqual([true, false]);
+    }),
+  );
+
+  it.effect("pairs the first connect after an add with the token the add minted", () =>
+    Effect.gen(function* () {
+      const reconnects: Array<DesktopSandboxEnvironmentReconnectInput> = [];
+      const bridge = makeSandboxBridge(reconnects, "running");
+      const gateway = makeDesktopSandboxGateway(() => bridge);
+
+      yield* gateway.provision({ target: SANDBOX_TARGET, idempotencyKey: "attempt-1" });
+      const first = yield* gateway.prepare({
+        connectionId: "sandbox-1",
+        expectedEnvironmentId: EnvironmentId.make("environment-sandbox"),
+        target: SANDBOX_TARGET,
+        sandbox: SANDBOX,
+      });
+
+      expect(first.pairingToken).toBe("provisioned");
+      expect(reconnects).toEqual([]);
+    }),
+  );
+
+  it.effect("counts a sandbox that is already gone as deleted", () =>
+    Effect.gen(function* () {
+      const bridge = makeSandboxBridge([], "running");
+      const gateway = makeDesktopSandboxGateway(() => bridge);
+
+      yield* gateway.destroy(SANDBOX);
+      yield* gateway.stop(SANDBOX);
+    }),
+  );
+
+  it.effect("says when a failed add left a billable sandbox behind", () =>
+    Effect.gen(function* () {
+      const failing = (failure: Omit<DesktopSandboxEnvironmentFailure, "type">) =>
+        makeDesktopSandboxGateway(
+          () =>
+            ({
+              ...makeSandboxBridge([], "running"),
+              ensureSandboxEnvironment: async () => ({
+                type: "sandbox-environment-failed",
+                ...failure,
+              }),
+            }) as DesktopBridge,
+        ).provision({ target: SANDBOX_TARGET, idempotencyKey: "attempt-1" });
+      const timedOut = "T3 did not answer through the Daytona preview URL within 60 seconds.";
+
+      const kept = yield* Effect.flip(
+        failing({ stage: "probe", detail: timedOut, sandbox: SANDBOX }),
+      );
+      expect(kept).toMatchObject({ _tag: "ConnectionTransientError" });
+      expect(kept.message).toBe(
+        `${timedOut} The boat sandbox it created is kept and billed: create it again with the same settings to retry with it, or delete it in your boat dashboard.`,
+      );
+
+      // Nothing was created, or the provider deleted it, so there is nothing to mention.
+      const none = yield* Effect.flip(failing({ stage: "create", detail: timedOut }));
+      expect(none.message).toBe(timedOut);
+      const deleted = "Daytona reports the sandbox as deleted.";
+      const gone = yield* Effect.flip(
+        failing({ stage: "create", failure: "not-found", detail: deleted, sandbox: SANDBOX }),
+      );
+      expect(gone.message).toBe(deleted);
+    }),
+  );
+
+  it.effect("reports cloud sandboxes as unsupported outside the desktop app", () =>
+    Effect.gen(function* () {
+      const gateway = makeDesktopSandboxGateway(() => undefined);
+      const error = yield* Effect.flip(
+        gateway.provision({ target: SANDBOX_TARGET, idempotencyKey: "attempt-1" }),
+      );
+
+      expect(error).toMatchObject({ _tag: "ConnectionBlockedError", reason: "unsupported" });
+    }),
+  );
 });

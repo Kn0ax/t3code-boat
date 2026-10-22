@@ -1,4 +1,5 @@
 import {
+  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
   type OrchestrationProjectShell,
@@ -28,6 +29,7 @@ import {
   THREAD_HISTORY_PAGE_POLICY,
   OLDER_THREAD_USER_TURN_LIMIT,
 } from "./threadHistoryPaging.ts";
+import * as ThreadImportService from "./ThreadImportService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { buildActiveShellSnapshot, loadShellSnapshotParts } from "./ShellStream.ts";
@@ -53,6 +55,7 @@ export const layer = HttpApiBuilder.group(
     const sql = yield* SqlClient.SqlClient;
     const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+    const threadImport = yield* ThreadImportService.ThreadImportService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
@@ -255,6 +258,22 @@ export const layer = HttpApiBuilder.group(
                 }),
               ),
             );
+        }),
+      )
+      .handle(
+        "threadImport",
+        Effect.fn("environment.orchestration.threadImport")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* threadImport.importThread(args.payload).pipe(
+            traceLocalHandlerWork,
+            Effect.catchTags({
+              ThreadImportProjectNotFoundError: () => failEnvironmentNotFound("project_not_found"),
+            }),
+            Effect.catch((error) =>
+              failEnvironmentInternal("orchestration_thread_import_failed", error),
+            ),
+          );
         }),
       );
   }),

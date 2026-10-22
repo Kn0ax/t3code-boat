@@ -51,6 +51,10 @@ const ALLOWED_WS_PATHS: ReadonlyArray<RegExp> = [
 const DROPPED_REQUEST_HEADERS = new Set([
   "host",
   "connection",
+  // Hop-by-hop headers fetch rejects, which would fail the request.
+  "keep-alive",
+  "transfer-encoding",
+  "expect",
   "upgrade",
   "sec-websocket-key",
   "sec-websocket-version",

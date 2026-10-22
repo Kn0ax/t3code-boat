@@ -65,7 +65,17 @@ import {
 } from "../../onboarding/targetEnvironment.logic";
 import { useProjectScans } from "../../onboarding/useProjectScans";
 import { projectEnvironment } from "../../state/projects";
+import { useBoatVmHostEnvironmentId } from "../../state/boatVmHost";
 import { serverEnvironment } from "../../state/server";
+import { useT3DataImport } from "../../onboarding/t3DataImport";
+import {
+  nextOnboardingStep,
+  ONBOARDING_STEP_LABELS,
+  resolveOnboardingSteps,
+  type OnboardingStep,
+} from "../../onboarding/wizardSteps.logic";
+import { BoatStep } from "./BoatStep";
+import { CopyDataStep } from "./CopyDataStep";
 import {
   readEnvironmentScope,
   useEnvironmentScope,
@@ -100,11 +110,9 @@ import { toastManager } from "../ui/toast";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime } from "../../timestampFormat";
 
-type WizardStep = "connection" | "agents" | "import";
 const NO_ENVIRONMENTS: readonly EnvironmentId[] = [];
 
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
-const ONBOARDING_STAGES = ["Connect", "Agents", "Projects"] as const;
 const SCAN_LIMIT_MESSAGE = "Scan limit reached. Some projects or conversations may be missing.";
 
 export function WelcomeWizard({
@@ -116,7 +124,18 @@ export function WelcomeWizard({
   readonly resumeEnvironmentId?: EnvironmentId | undefined;
   readonly onDone: (projectRef?: ScopedProjectRef) => void | Promise<void>;
 }) {
-  const [step, setStep] = useState<WizardStep>(resumeEnvironmentId ? "agents" : "connection");
+  const dataImport = useT3DataImport();
+  const boatHostEnvironmentId = useBoatVmHostEnvironmentId();
+  const boatServerConfig = useAtomValue(serverEnvironment.configValueAtom(boatHostEnvironmentId));
+  const steps = resolveOnboardingSteps({
+    dataImport: dataImport ?? null,
+    boatSupported: boatServerConfig?.environment?.capabilities?.sandboxJobs === true,
+  });
+  const [chosenStep, setStep] = useState<OnboardingStep | null>(
+    resumeEnvironmentId ? "agents" : null,
+  );
+  // The desktop app answers whether there is data to copy before the first step is known.
+  const step = chosenStep ?? (dataImport === undefined ? null : steps[0]!);
   const { environments } = useEnvironments();
   const [selection, setSelection] = useState<ReadonlySet<EnvironmentId> | null>(null);
   // One registry for the wizard's lifetime, shared with the connect list, so a computer is
@@ -160,7 +179,7 @@ export function WelcomeWizard({
     setSetupIds(ids);
     setStep("agents");
   };
-  const stageIndex = step === "agents" ? 1 : step === "import" ? 2 : 0;
+  const stageIndex = step === null ? 0 : Math.max(steps.indexOf(step), 0);
   const finish = (
     projectRef?: ScopedProjectRef,
     importWarning?: string,
@@ -215,6 +234,11 @@ export function WelcomeWizard({
     finishingPromiseRef.current = completion;
     return completion;
   };
+  const advance = (from: OnboardingStep) => {
+    const next = nextOnboardingStep(steps, from);
+    if (next === null) void finish();
+    else setStep(next);
+  };
 
   return (
     <Dialog
@@ -242,18 +266,25 @@ export function WelcomeWizard({
           }
         >
           <WizardSteps
-            steps={ONBOARDING_STAGES}
+            steps={steps.map((item) => ONBOARDING_STEP_LABELS[item])}
             currentStep={stageIndex}
             isStepDisabled={(index) => isImporting || index >= stageIndex}
             onStepChange={(index) => {
               if (isImporting || index > stageIndex) return;
-              setStep(index === 0 ? "connection" : "agents");
+              const target = steps[index];
+              if (target !== undefined) setStep(target);
             }}
           />
         </WizardHeader>
 
         <WizardPanel holdHeight={isLoadingProjects}>
-          {step === "connection" ? (
+          {step === null ? (
+            <div className="flex min-h-40 items-center justify-center">
+              <Spinner size="lg" tone="muted" />
+            </div>
+          ) : step === "copy-data" && dataImport ? (
+            <CopyDataStep state={dataImport} onSkip={() => advance("copy-data")} />
+          ) : step === "connection" ? (
             <ConnectionStep
               expandPairingInitially={!localAvailable && !hasCloudPublicConfig()}
               selectedIds={selectedIds}
@@ -275,15 +306,17 @@ export function WelcomeWizard({
               }}
             />
           ) : step === "agents" ? (
-            <AgentsStep environmentIds={setupIds} onContinue={() => setStep("import")} />
-          ) : (
+            <AgentsStep environmentIds={setupIds} onContinue={() => advance("agents")} />
+          ) : step === "boat" && boatServerConfig ? (
+            <BoatStep serverConfig={boatServerConfig} onContinue={() => advance("boat")} />
+          ) : step === "import" ? (
             <ImportStep
               scans={scans}
               isImporting={isImporting}
               setIsImporting={setIsImporting}
               onDone={finish}
             />
-          )}
+          ) : null}
         </WizardPanel>
       </WizardPopup>
       <ChatGptWelcomeCoordinator />

@@ -691,6 +691,73 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("keeps sandbox job keys in the secret store and out of the settings file", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        const readSecret = (name: string) =>
+          secrets
+            .get(name)
+            .pipe(Effect.map(Option.map((bytes) => new TextDecoder().decode(bytes))));
+
+        yield* serverSettings.updateSettings({
+          sandboxJobs: {
+            enabled: true,
+            providerKeys: { boat: "boat-key" },
+            agentKeys: { ANTHROPIC_API_KEY: "sk-ant" },
+            tailscaleAuthKey: "tskey-auth",
+            modelProxy: { baseUrl: "http://radxa:8317", key: "proxy-key" },
+          },
+        });
+        const onDisk = yield* fileSystem.readFileString(serverConfig.settingsPath);
+        assert.notInclude(onDisk, "boat-key");
+        assert.notInclude(onDisk, "sk-ant");
+        assert.notInclude(onDisk, "tskey-auth");
+        assert.notInclude(onDisk, "proxy-key");
+        assert.include(onDisk, "http://radxa:8317");
+        assert.deepStrictEqual(
+          yield* readSecret("sandbox-model-proxy-key"),
+          Option.some("proxy-key"),
+        );
+        assert.deepStrictEqual(
+          yield* readSecret("sandbox-tailscale-auth-key"),
+          Option.some("tskey-auth"),
+        );
+        assert.deepStrictEqual(yield* readSecret("sandbox-provider-boat"), Option.some("boat-key"));
+
+        const settings = yield* serverSettings.getSettings;
+        assert.equal(settings.sandboxJobs.providerKeys.boat, "boat-key");
+        assert.equal(settings.sandboxJobs.agentKeys.ANTHROPIC_API_KEY, "sk-ant");
+        assert.equal(settings.sandboxJobs.tailscaleAuthKey, "tskey-auth");
+        const forClient = ServerSettingsModule.redactServerSettingsForClient(settings);
+        assert.notEqual(forClient.sandboxJobs.providerKeys.boat, "boat-key");
+        assert.notEqual(forClient.sandboxJobs.providerKeys.boat, "");
+        assert.notEqual(forClient.sandboxJobs.tailscaleAuthKey, "tskey-auth");
+        assert.notEqual(forClient.sandboxJobs.modelProxy.key, "proxy-key");
+        assert.equal(forClient.sandboxJobs.modelProxy.baseUrl, "http://radxa:8317");
+        assert.equal(settings.sandboxJobs.modelProxy.key, "proxy-key");
+
+        // Sending the client's marker back keeps a key; "" removes it.
+        yield* serverSettings.updateSettings({
+          sandboxJobs: {
+            providerKeys: { boat: forClient.sandboxJobs.providerKeys.boat },
+            agentKeys: { ANTHROPIC_API_KEY: "" },
+            modelProxy: { key: forClient.sandboxJobs.modelProxy.key },
+          },
+        });
+        const updated = yield* serverSettings.getSettings;
+        assert.equal(updated.sandboxJobs.modelProxy.key, "proxy-key");
+        assert.equal(updated.sandboxJobs.modelProxy.baseUrl, "http://radxa:8317");
+        assert.equal(updated.sandboxJobs.providerKeys.boat, "boat-key");
+        assert.equal(updated.sandboxJobs.agentKeys.ANTHROPIC_API_KEY, "");
+        assert.isTrue(Option.isNone(yield* readSecret("sandbox-agent-ANTHROPIC_API_KEY")));
+      }),
+    ).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
   it.effect("persists and broadcasts thread settlement settings", () =>
     Effect.scoped(
       Effect.gen(function* () {

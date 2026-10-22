@@ -96,6 +96,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
   {
     refreshTrigger,
     idleTtlMs,
+    refreshIntervalMs,
     persistence,
     initialState,
     rpcSession,
@@ -104,6 +105,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     readonly refreshTrigger?: Atom.Atom<unknown>;
     readonly isFinal?: (value: A) => boolean;
     readonly idleTtlMs?: number;
+    readonly refreshIntervalMs?: number;
     readonly persistence?: QueryPersistence<A>;
     readonly initialState?: SupervisorConnectionState;
     readonly rpcSession?: RpcSession.RpcSession;
@@ -149,6 +151,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     execute: () => execute,
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
+    ...(refreshIntervalMs === undefined ? {} : { refreshIntervalMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
   });
 
@@ -1035,6 +1038,36 @@ describe("environment query lifecycle", () => {
             suspendOnWaiting: true,
           }),
         ).toBe("updated");
+      }),
+    ),
+  );
+
+  it.effect("refreshes an observed inventory periodically and stops when it is unmounted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+        let executions = 0;
+        const harness = yield* makeEnvironmentQueryHarness(
+          Effect.sync(() => ++executions),
+          {
+            refreshIntervalMs: 30_000,
+            idleTtlMs: 0,
+          },
+        );
+        const registry = AtomRegistry.make();
+        yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+        const read = readEnvironmentQuery(registry, harness.atom);
+        const unmount = registry.mount(harness.atom);
+        expect(yield* read).toBe(1);
+        vi.advanceTimersByTime(30_000);
+        yield* Effect.yieldNow;
+        expect(yield* read).toBe(2);
+        unmount();
+        yield* Effect.yieldNow;
+        vi.advanceTimersByTime(60_000);
+        yield* Effect.yieldNow;
+        expect(executions).toBe(2);
       }),
     ),
   );

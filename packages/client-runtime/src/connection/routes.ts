@@ -13,6 +13,7 @@ import {
   type ConnectionRoute,
 } from "./catalog.ts";
 import { BearerConnectionTarget, type ConnectionTarget } from "./model.ts";
+import { sandboxProviderLabel, sandboxRefKey } from "./sandbox.ts";
 
 export type ConnectionRouteKind =
   | "relay"
@@ -21,7 +22,8 @@ export type ConnectionRouteKind =
   | "tailnet"
   | "vpn"
   | "public"
-  | "ssh";
+  | "ssh"
+  | "sandbox";
 
 export const RELAY_ROUTE_ID = "relay";
 
@@ -33,6 +35,7 @@ export function connectionRouteId(target: ConnectionTarget): string {
       return RELAY_ROUTE_ID;
     case "BearerConnectionTarget":
     case "SshConnectionTarget":
+    case "SandboxConnectionTarget":
       return target.connectionId;
   }
 }
@@ -87,6 +90,8 @@ export function connectionRouteKind(route: ConnectionRoute): ConnectionRouteKind
       return "relay";
     case "SshConnectionTarget":
       return "ssh";
+    case "SandboxConnectionTarget":
+      return "sandbox";
     case "PrimaryConnectionTarget":
     case "BearerConnectionTarget": {
       const hostname = routeHostname(route);
@@ -108,6 +113,7 @@ const ROUTE_KIND_RANK: Record<ConnectionRouteKind, number> = {
   tailnet: 2,
   vpn: 2,
   public: 3,
+  sandbox: 3,
   ssh: 4,
   relay: 5,
 };
@@ -150,6 +156,8 @@ function routeAddressKey(route: ConnectionRoute): string | null {
       return `bearer:${profile.httpBaseUrl.replace(/\/+$/, "")}`;
     case "SshConnectionProfile":
       return `ssh:${sshTargetKey(profile.target)}`;
+    case "SandboxConnectionProfile":
+      return `sandbox:${sandboxRefKey(profile.sandbox)}`;
     default:
       return null;
   }
@@ -173,6 +181,12 @@ export function connectionRouteLabel(route: ConnectionRoute): string {
         ? `SSH ${profile.target.username ? `${profile.target.username}@` : ""}${profile.target.hostname}`
         : "SSH";
     }
+    case "sandbox": {
+      const profile = Option.getOrNull(route.profile);
+      return profile?._tag === "SandboxConnectionProfile"
+        ? `${sandboxProviderLabel(profile.sandbox.providerId)} sandbox`
+        : "Cloud sandbox";
+    }
     case "public":
       return routeHostname(route) ?? "Remote link";
   }
@@ -195,6 +209,14 @@ export function hasRelayRoute(
 ): boolean {
   return [entry.target, ...(entry.alternateRoutes ?? []).map((route) => route.target)].some(
     (target) => target._tag === "RelayConnectionTarget",
+  );
+}
+
+export function hasSandboxRoute(
+  entry: Pick<ConnectionCatalogEntry, "target" | "alternateRoutes">,
+): boolean {
+  return [entry.target, ...(entry.alternateRoutes ?? []).map((route) => route.target)].some(
+    (target) => target._tag === "SandboxConnectionTarget",
   );
 }
 

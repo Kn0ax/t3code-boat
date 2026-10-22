@@ -31,6 +31,15 @@ import {
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
 import {
+  clearSandboxProviderCredential,
+  destroySandboxEnvironment,
+  ensureSandboxEnvironment,
+  hasSandboxProviderCredential,
+  reconnectSandboxEnvironment,
+  setSandboxProviderCredential,
+  stopSandboxEnvironment,
+} from "./methods/sandboxEnvironment.ts";
+import {
   checkForUpdate,
   downloadUpdate,
   getUpdateState,
@@ -83,6 +92,7 @@ import {
   installCliCommand,
   uninstallCliCommand,
 } from "./methods/cliCommand.ts";
+import { getT3DataImport, importT3Data } from "./methods/dataImport.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -132,6 +142,14 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(issueSshWebSocketTicket);
   yield* ipc.handle(resolveSshPasswordPrompt);
 
+  yield* ipc.handle(ensureSandboxEnvironment);
+  yield* ipc.handle(reconnectSandboxEnvironment);
+  yield* ipc.handle(stopSandboxEnvironment);
+  yield* ipc.handle(destroySandboxEnvironment);
+  yield* ipc.handle(setSandboxProviderCredential);
+  yield* ipc.handle(clearSandboxProviderCredential);
+  yield* ipc.handle(hasSandboxProviderCredential);
+
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);
   yield* ipc.handle(setTailscaleServeEnabled);
@@ -161,6 +179,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);
   yield* ipc.handle(getCliCommandState);
+  yield* ipc.handle(getT3DataImport);
+  yield* ipc.handle(importT3Data);
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
   for (const previewMethod of PreviewIpc.methods) {

@@ -9,11 +9,13 @@ import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { HttpClient } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import * as DesktopDataImport from "../app/DesktopDataImport.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
@@ -112,6 +114,7 @@ export const layer = Layer.effect(
     // run.
     const layerScope = yield* Scope.Scope;
     const factoryContext = yield* Effect.context<BackendInstanceFactoryRequirements>();
+    const path = yield* Path.Path;
 
     // Fatal configuration failures persist the Windows fallback. Bounded
     // transport failures use an in-memory fallback for this launch so the app
@@ -163,7 +166,12 @@ export const layer = Layer.effect(
       // permanently capture DEFAULT_DESKTOP_SETTINGS and mislabel WSL-only
       // primaries as Windows.
       label: configuration.resolvePrimaryLabel,
-      configResolve: configuration.resolvePrimary,
+      // A requested data import must finish before the backend opens the database.
+      configResolve: configuration.resolvePrimary.pipe(
+        Effect.tap(DesktopDataImport.runPendingImport),
+        Effect.provideContext(factoryContext),
+        Effect.provideService(Path.Path, path),
+      ),
       // Window creation errors propagating out of handleBackendReady must not block the readiness
       // callback (that would prevent restartAttempt from being reset), so we absorb them here.
       onReady: (httpBaseUrl) =>

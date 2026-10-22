@@ -21,6 +21,11 @@ vi.mock("@effect/atom-react", async (importOriginal) => {
       atom === primaryServerKeybindingsAtom ? DEFAULT_RESOLVED_KEYBINDINGS : [],
   };
 });
+// Its host reads an atom the useAtomValue stub above cannot answer.
+vi.mock("./SaveBoatSnapshotDialog", () => ({
+  SaveBoatSnapshotDialogHost: () => null,
+  openSaveBoatSnapshotDialog: () => {},
+}));
 vi.mock("../hooks/useTheme", () => ({
   useRenderedAppearance: () => "light",
   useTheme: () => ({ theme: "default", resolvedTheme: "light", appearanceMode: "light" }),

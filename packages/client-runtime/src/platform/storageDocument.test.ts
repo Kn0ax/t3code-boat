@@ -10,6 +10,8 @@ import {
   BearerConnectionProfile,
   BearerConnectionRegistration,
   RelayConnectionRegistration,
+  SandboxConnectionProfile,
+  SandboxConnectionRegistration,
   SshConnectionProfile,
   SshConnectionRegistration,
 } from "../connection/catalog.ts";
@@ -18,6 +20,7 @@ import {
   ConnectionTransientError,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SandboxConnectionTarget,
   SshConnectionTarget,
 } from "../connection/model.ts";
 import {
@@ -39,6 +42,9 @@ const decodeConnectionCatalogDocument = Schema.decodeUnknownEffect(ConnectionCat
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const decodeCatalogDocument = Schema.decodeUnknownSync(ConnectionCatalogDocument);
+const decodeStoredCatalogDocument = Schema.decodeUnknownSync(
+  Schema.fromJsonString(ConnectionCatalogDocument),
+);
 
 const RELAY_TARGET = new RelayConnectionTarget({
   environmentId: ENVIRONMENT_ID,
@@ -73,6 +79,66 @@ const REMOTE_TOKEN = new TokenStore.RemoteDpopAccessToken({
 });
 
 describe("ConnectionCatalogDocument", () => {
+  it.each(["daytona", "docker"])(
+    "drops retired %s routes without losing other connections or metadata",
+    (providerId) => {
+      const retiredId = `sandbox:retired:${providerId}:box`;
+      const expected = {
+        ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+        targets: [RELAY_TARGET, BEARER_TARGET],
+        profiles: [BEARER_PROFILE],
+        credentials: [{ connectionId: BEARER_TARGET.connectionId, credential: BEARER_CREDENTIAL }],
+        remoteDpopTokens: [REMOTE_TOKEN],
+        disabledEnvironmentIds: [ENVIRONMENT_ID],
+        githubRoutingPermissions: [
+          { environmentId: ENVIRONMENT_ID, connectionKey: "key", permission: "read" },
+        ],
+      };
+      const stored = JSON.stringify({
+        ...expected,
+        targets: [
+          ...expected.targets,
+          {
+            _tag: "SandboxConnectionTarget",
+            environmentId: ENVIRONMENT_ID,
+            label: "Retired box",
+            connectionId: retiredId,
+          },
+        ],
+        profiles: [
+          ...expected.profiles,
+          {
+            _tag: "SandboxConnectionProfile",
+            connectionId: retiredId,
+            environmentId: ENVIRONMENT_ID,
+            label: "Retired box",
+            target: { providerId },
+            sandbox: { providerId, sandboxId: "box" },
+            providerUrl: "https://box.example.test",
+          },
+        ],
+        credentials: [
+          ...expected.credentials,
+          { connectionId: retiredId, credential: BEARER_CREDENTIAL },
+        ],
+      });
+
+      const restored = decodeStoredCatalogDocument(stored);
+      expect(restored).toEqual(expected);
+      const schema = Schema.fromJsonString(ConnectionCatalogDocument);
+      expect(Schema.decodeSync(schema)(Schema.encodeSync(schema)(restored))).toEqual(expected);
+    },
+  );
+
+  it("still rejects invalid supported profiles", () => {
+    expect(() =>
+      decodeCatalogDocument({
+        ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+        profiles: [{ ...BEARER_PROFILE, httpBaseUrl: 42 }],
+      }),
+    ).toThrow();
+  });
+
   it.effect("persists explicit GitHub trust and forgets it when a connection is removed", () =>
     Effect.gen(function* () {
       let document = EMPTY_CONNECTION_CATALOG_DOCUMENT;
@@ -416,6 +482,128 @@ describe("ConnectionCatalogDocument", () => {
     ]);
     // Removing the route forgets its token too.
     expect(removeConnectionFromCatalog(document, ENVIRONMENT_ID).credentials).toEqual([]);
+  });
+
+  it("loads a catalog that a release without cloud sandboxes wrote", () => {
+    // The stored JSON as an earlier release encodes it: no sandbox kinds.
+    const stored = JSON.stringify({
+      schemaVersion: 1,
+      targets: [
+        { _tag: "RelayConnectionTarget", environmentId: "environment-relay", label: "Relay" },
+        {
+          _tag: "BearerConnectionTarget",
+          environmentId: "environment-1",
+          label: "Desk",
+          connectionId: "bearer:environment-1:https://desk.example.test",
+        },
+        {
+          _tag: "BearerConnectionTarget",
+          environmentId: "environment-1",
+          label: "Desk",
+          connectionId: "learned:environment-1:http://100.101.102.103:3773",
+        },
+        {
+          _tag: "SshConnectionTarget",
+          environmentId: "environment-ssh",
+          label: "Devbox",
+          connectionId: "ssh:environment-ssh:devbox",
+        },
+      ],
+      profiles: [
+        {
+          _tag: "BearerConnectionProfile",
+          connectionId: "bearer:environment-1:https://desk.example.test",
+          environmentId: "environment-1",
+          label: "Desk",
+          httpBaseUrl: "https://desk.example.test",
+          wsBaseUrl: "wss://desk.example.test",
+        },
+        {
+          _tag: "BearerConnectionProfile",
+          connectionId: "learned:environment-1:http://100.101.102.103:3773",
+          environmentId: "environment-1",
+          label: "Desk",
+          httpBaseUrl: "http://100.101.102.103:3773",
+          wsBaseUrl: "ws://100.101.102.103:3773",
+          learned: true,
+          network: "tailscale",
+        },
+        {
+          _tag: "SshConnectionProfile",
+          connectionId: "ssh:environment-ssh:devbox",
+          environmentId: "environment-ssh",
+          label: "Devbox",
+          target: { alias: "devbox", hostname: "devbox.example.test", username: null, port: null },
+        },
+      ],
+      credentials: [
+        {
+          connectionId: "bearer:environment-1:https://desk.example.test",
+          credential: { _tag: "BearerConnectionCredential", token: "bearer-token" },
+        },
+      ],
+      remoteDpopTokens: [],
+      githubRoutingPermissions: [
+        { environmentId: "environment-ssh", connectionKey: "key", permission: "read" },
+      ],
+      disabledEnvironmentIds: ["environment-ssh"],
+    });
+
+    const document = decodeStoredCatalogDocument(stored);
+
+    expect(document.targets.map((target) => target._tag)).toEqual([
+      "RelayConnectionTarget",
+      "BearerConnectionTarget",
+      "BearerConnectionTarget",
+      "SshConnectionTarget",
+    ]);
+    expect(document.profiles.map((profile) => profile._tag)).toEqual([
+      "BearerConnectionProfile",
+      "BearerConnectionProfile",
+      "SshConnectionProfile",
+    ]);
+    expect(document.profiles[1]).toBeInstanceOf(BearerConnectionProfile);
+    expect(document.profiles[2]).toBeInstanceOf(SshConnectionProfile);
+    expect(document.credentials).toHaveLength(1);
+    expect(document.disabledEnvironmentIds).toEqual(["environment-ssh"]);
+  });
+
+  it("persists a cloud sandbox's profile and session token, and drops both on removal", () => {
+    const target = new SandboxConnectionTarget({
+      environmentId: ENVIRONMENT_ID,
+      label: "Agent box",
+      connectionId: "sandbox:environment-1:boat:box-1",
+    });
+    const profile = new SandboxConnectionProfile({
+      connectionId: target.connectionId,
+      environmentId: target.environmentId,
+      label: target.label,
+      target: {
+        providerId: "boat",
+        label: "Agent box",
+        size: "large",
+        region: "eu",
+        idleTimeoutMinutes: 0,
+        installAgentClis: false,
+        forwardGithubToken: true,
+      },
+      sandbox: { providerId: "boat", sandboxId: "box-1" },
+      providerUrl: "https://box-1.boat.example.test",
+    });
+    const document = registerConnectionInCatalog(
+      EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      new SandboxConnectionRegistration({ target, profile }),
+    );
+
+    expect(document.targets).toEqual([target]);
+    expect(document.profiles).toEqual([profile]);
+    // Every connect pairs afresh through the desktop, so no bearer is kept.
+    expect(document.credentials).toEqual([]);
+    const schema = Schema.fromJsonString(ConnectionCatalogDocument);
+    expect(Schema.decodeSync(schema)(Schema.encodeSync(schema)(document))).toEqual(document);
+    expect(removeConnectionFromCatalog(document, ENVIRONMENT_ID)).toEqual(
+      EMPTY_CONNECTION_CATALOG_DOCUMENT,
+    );
   });
 
   it("keeps every route of an environment and drops only a removed route's records", () => {

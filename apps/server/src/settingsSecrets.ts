@@ -155,5 +155,41 @@ export function mapSettingsSecrets(
       ) as EasDeviceHostConfig,
   );
 
-  return { ...settings, providerInstances, sourceControlHosts, usageLimitSources, easDeviceHosts };
+  // Sandbox job keys keep the secret names the sandbox job service has always used.
+  const sandboxKey = (secretName: string, value: string) => {
+    const result = map({
+      secretName,
+      kind: "field",
+      value,
+      redacted: value === SECRET_REDACTED,
+      sensitive: true,
+    });
+    return result.redacted ? SECRET_REDACTED : result.value;
+  };
+  const mapSandboxGroup = <T extends Record<string, string>>(group: T, prefix: string): T =>
+    Object.fromEntries(
+      Object.entries(group).map(([key, value]) => [key, sandboxKey(`${prefix}${key}`, value)]),
+    ) as T;
+  const sandboxJobs = {
+    ...settings.sandboxJobs,
+    providerKeys: mapSandboxGroup(settings.sandboxJobs.providerKeys, "sandbox-provider-"),
+    agentKeys: mapSandboxGroup(settings.sandboxJobs.agentKeys, "sandbox-agent-"),
+    tailscaleAuthKey: sandboxKey(
+      "sandbox-tailscale-auth-key",
+      settings.sandboxJobs.tailscaleAuthKey,
+    ),
+    modelProxy: {
+      ...settings.sandboxJobs.modelProxy,
+      key: sandboxKey("sandbox-model-proxy-key", settings.sandboxJobs.modelProxy.key),
+    },
+  };
+
+  return {
+    ...settings,
+    providerInstances,
+    sourceControlHosts,
+    usageLimitSources,
+    easDeviceHosts,
+    sandboxJobs,
+  };
 }

@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   connectionCatalogDisplayUrl,
   hasRelayRoute,
+  preparedDirectHttpBaseUrl,
   type EnvironmentPresentation as BaseEnvironmentPresentation,
 } from "@t3tools/client-runtime/connection";
 import { Discovery } from "@t3tools/client-runtime/relay";
@@ -80,6 +81,14 @@ export function usePrimaryEnvironment(): EnvironmentPresentation | null {
 export function useEnvironmentHttpBaseUrl(environmentId: EnvironmentId | null): string | null {
   const prepared = usePreparedConnection(environmentId);
   return Option.isSome(prepared) ? prepared.value.httpBaseUrl : null;
+}
+
+/** The environment's own origin for its ports and webhooks, not a relay in front of its API. */
+export function useEnvironmentDirectHttpBaseUrl(
+  environmentId: EnvironmentId | null,
+): string | null {
+  const prepared = usePreparedConnection(environmentId);
+  return Option.isSome(prepared) ? preparedDirectHttpBaseUrl(prepared.value) : null;
 }
 
 export function useRelayEnvironmentDiscovery(): Discovery.RelayEnvironmentDiscoveryState {

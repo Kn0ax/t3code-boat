@@ -7,7 +7,10 @@ import {
 } from "@t3tools/contracts";
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { useAtomValue } from "@effect/atom-react";
-import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
+import {
+  connectionStatusTitle,
+  resolveConnectionMachineKind,
+} from "@t3tools/client-runtime/connection";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
@@ -195,6 +198,7 @@ function providerEnvironmentDetail(environment: EnvironmentPresentation): string
   if (environment.entry.target._tag === "PrimaryConnectionTarget") return "Primary device";
   if (environment.relayManaged) return "T3 Connect";
   if (environment.entry.target._tag === "SshConnectionTarget") return "SSH";
+  if (environment.entry.target._tag === "SandboxConnectionTarget") return "Cloud sandbox";
   if (isDesktopLocalConnectionTarget(environment.entry.target)) return "Local device";
   return environment.displayUrl ?? "Remote device";
 }
@@ -267,7 +271,9 @@ function EnvironmentUnavailablePlaceholder({
     <ProviderSettingsPlaceholder
       deviceTabs={deviceTabs}
       icon={
-        <EnvironmentMachineIcon kind={resolveEnvironmentMachineKind(environment.serverConfig)} />
+        <EnvironmentMachineIcon
+          kind={resolveConnectionMachineKind(environment.entry, environment.serverConfig)}
+        />
       }
       title={title}
       description={description}
@@ -387,7 +393,10 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
           }}
         >
           {options.map((environment) => {
-            const machine = resolveEnvironmentMachineKind(environment.serverConfig);
+            const machine = resolveConnectionMachineKind(
+              environment.entry,
+              environment.serverConfig,
+            );
             const detail = providerEnvironmentDetail(environment);
             const statusText = connectionStatusTitle(environment.connection);
             return (

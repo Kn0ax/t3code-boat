@@ -2,6 +2,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   type AuthEnvironmentScope,
+  type DesktopSandboxEnvironmentBootstrap,
   ORCHESTRATION_PROTOCOL_VERSION,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -33,11 +34,45 @@ import * as Onboarding from "./onboarding.ts";
 import {
   prepareBearerConnectionUpdate,
   preparePairingRegistration,
+  prepareSandboxRegistration,
   prepareSshRegistration,
 } from "./onboarding.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionProfileStore from "./profileStore.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+
+const SANDBOX_BOOTSTRAP: DesktopSandboxEnvironmentBootstrap = {
+  target: {
+    providerId: "boat",
+    label: "",
+    size: "medium",
+    idleTimeoutMinutes: 30,
+    installAgentClis: true,
+    forwardGithubToken: false,
+  },
+  sandbox: { providerId: "boat", sandboxId: "sandbox-1" },
+  httpBaseUrl: "http://127.0.0.1:4100/",
+  wsBaseUrl: "ws://127.0.0.1:4100/",
+  providerUrl: "https://3773-sandbox-1.proxy.example.test",
+  pairingToken: "sandbox-pairing-token",
+};
+
+function sandboxGateway(
+  bootstrap: DesktopSandboxEnvironmentBootstrap,
+  provisioned: Array<string> = [],
+) {
+  return ClientCapabilities.SandboxEnvironmentGateway.of({
+    provision: (input) =>
+      Effect.sync(() => {
+        provisioned.push(input.idempotencyKey);
+        return bootstrap;
+      }),
+    prepare: () => Effect.die("unused"),
+    resume: () => Effect.die("unused"),
+    stop: () => Effect.die("unused"),
+    destroy: () => Effect.die("unused"),
+  });
+}
 
 const layerClientPresentation = Layer.succeed(
   ClientCapabilities.ClientPresentation,
@@ -646,6 +681,97 @@ describe("connection onboarding", () => {
         // Saved so the first connect reuses this pairing instead of adding another.
         credential: { token: "bearer-token" },
       });
+    }),
+  );
+  it.effect(
+    "registers a provisioned cloud sandbox and leaves its pairing token for the first connect",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+        const provisioned: Array<string> = [];
+        const registration = yield* prepareSandboxRegistration({
+          target: SANDBOX_BOOTSTRAP.target,
+          idempotencyKey: "attempt-1",
+        }).pipe(
+          Effect.provideService(
+            ClientCapabilities.SandboxEnvironmentGateway,
+            sandboxGateway(SANDBOX_BOOTSTRAP, provisioned),
+          ),
+          Effect.provide(Layer.mergeAll(layerClientPresentation, layerPairingHttp(calls))),
+        );
+
+        const connectionId = "sandbox:environment-paired:boat:sandbox-1";
+        expect(provisioned).toEqual(["attempt-1"]);
+        expect(registration).toMatchObject({
+          _tag: "SandboxConnectionRegistration",
+          target: { environmentId: "environment-paired", label: "boat sandbox", connectionId },
+          profile: {
+            connectionId,
+            environmentId: "environment-paired",
+            label: "boat sandbox",
+            target: SANDBOX_BOOTSTRAP.target,
+            sandbox: SANDBOX_BOOTSTRAP.sandbox,
+            providerUrl: SANDBOX_BOOTSTRAP.providerUrl,
+          },
+        });
+        expect(calls.map((call) => call.url)).toEqual([
+          new URL("/.well-known/t3/environment", SANDBOX_BOOTSTRAP.httpBaseUrl).toString(),
+        ]);
+      }),
+  );
+
+  it.effect("keeps the label chosen for a cloud sandbox", () =>
+    Effect.gen(function* () {
+      const registration = yield* prepareSandboxRegistration({
+        target: { ...SANDBOX_BOOTSTRAP.target, label: "Agent box" },
+        idempotencyKey: "attempt-1",
+      }).pipe(
+        Effect.provideService(
+          ClientCapabilities.SandboxEnvironmentGateway,
+          sandboxGateway({
+            ...SANDBOX_BOOTSTRAP,
+            target: { ...SANDBOX_BOOTSTRAP.target, label: "Agent box" },
+          }),
+        ),
+        Effect.provide(Layer.mergeAll(layerClientPresentation, layerPairingHttp([]))),
+      );
+
+      expect(registration.target.label).toBe("Agent box");
+      expect(registration.profile.label).toBe("Agent box");
+    }),
+  );
+
+  it.effect("says a sandbox T3 Code could not reach is kept and billed", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        prepareSandboxRegistration({
+          target: SANDBOX_BOOTSTRAP.target,
+          idempotencyKey: "attempt-1",
+        }).pipe(
+          Effect.provideService(
+            ClientCapabilities.SandboxEnvironmentGateway,
+            sandboxGateway(SANDBOX_BOOTSTRAP),
+          ),
+          Effect.provide(
+            Layer.mergeAll(layerClientPresentation, layerPairingHttp([], { failDescriptor: true })),
+          ),
+        ),
+      );
+
+      expect(error.message).toContain("The boat sandbox it created is kept and billed");
+    }),
+  );
+
+  it.effect("reports cloud sandboxes as unsupported without a platform gateway", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        prepareSandboxRegistration({
+          target: SANDBOX_BOOTSTRAP.target,
+          idempotencyKey: "attempt-1",
+        }).pipe(Effect.provide(Layer.mergeAll(layerClientPresentation, layerPairingHttp([])))),
+      );
+
+      expect(error).toMatchObject({ _tag: "ConnectionBlockedError", reason: "unsupported" });
     }),
   );
 });

@@ -289,7 +289,7 @@ const ServerSettingsJson = fromLenientJson(
     ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }),
 );
-const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
+export const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
 const LegacyProviderSettingsJson = fromLenientJson(
   Schema.Struct({
     providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),

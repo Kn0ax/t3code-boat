@@ -12,6 +12,7 @@ import {
   type ConnectionAttemptError,
   ConnectionTransientError,
   Connectivity,
+  keptSandboxDetail,
   mapRemoteEnvironmentError,
   type PlatformConnectionRegistration,
   PrimaryConnectionRegistration,
@@ -27,6 +28,11 @@ import {
   AuthStandardClientScopes,
   type DesktopBridge,
   type DesktopEnvironmentBootstrap,
+  type DesktopSandboxEnvironmentBootstrap,
+  DesktopSandboxEnvironmentFailedType,
+  type DesktopSandboxEnvironmentFailure,
+  DesktopSandboxEnvironmentStoppedType,
+  type DesktopSandboxRef,
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   type EnvironmentId,
@@ -249,6 +255,179 @@ export const provisionDesktopSshEnvironment = Effect.fn(
 });
 
 /**
+ * A failed sandbox operation as a connection error. Retrying cannot fix a bad
+ * key, a deleted sandbox or a full quota, so those block until the user acts;
+ * a slow or unreachable provider is retried.
+ */
+export function sandboxFailureError(
+  failure: DesktopSandboxEnvironmentFailure,
+): ConnectionAttemptError {
+  switch (failure.failure ?? "none") {
+    case "unauthorized":
+      return new ConnectionBlockedError({ reason: "authentication", detail: failure.detail });
+    case "not-found":
+      return new ConnectionBlockedError({ reason: "configuration", detail: failure.detail });
+    case "quota-exceeded":
+      return new ConnectionBlockedError({ reason: "permission", detail: failure.detail });
+    case "unsupported":
+      return new ConnectionBlockedError({ reason: "unsupported", detail: failure.detail });
+    case "timeout":
+      return new ConnectionTransientError({ reason: "timeout", detail: failure.detail });
+    case "network":
+      return new ConnectionTransientError({ reason: "network", detail: failure.detail });
+    case "provider-error":
+    case "none":
+      // A credentials step without a provider failure is setup the user must
+      // fix, such as an unavailable GitHub login.
+      return failure.stage === "credentials"
+        ? new ConnectionBlockedError({ reason: "configuration", detail: failure.detail })
+        : new ConnectionTransientError({ reason: "remote-unavailable", detail: failure.detail });
+  }
+}
+
+export const SANDBOX_STOPPED_DETAIL =
+  "This cloud sandbox is stopped. Choose Start sandbox in its menu in Settings, Connections.";
+
+/** One the provider reports as deleted is neither kept nor billed. */
+function provisionFailureDetail(failure: DesktopSandboxEnvironmentFailure): string {
+  if (failure.sandbox === undefined || failure.failure === "not-found") return failure.detail;
+  return keptSandboxDetail(failure.detail, failure.sandbox);
+}
+
+function sandboxBridgeError(cause: unknown) {
+  return new ConnectionTransientError({
+    reason: "remote-unavailable",
+    detail: `The desktop app could not reach the cloud sandbox: ${
+      cause instanceof Error ? cause.message : String(cause)
+    }`,
+  });
+}
+
+function requireSandboxBridge(bridge: DesktopBridge | undefined) {
+  if (
+    bridge?.ensureSandboxEnvironment === undefined ||
+    bridge.reconnectSandboxEnvironment === undefined ||
+    bridge.stopSandboxEnvironment === undefined ||
+    bridge.destroySandboxEnvironment === undefined
+  ) {
+    return Effect.fail(
+      new ConnectionBlockedError({
+        reason: "unsupported",
+        detail: "Cloud sandbox environments are only available in the desktop app.",
+      }),
+    );
+  }
+  return Effect.succeed({
+    ensure: bridge.ensureSandboxEnvironment,
+    reconnect: bridge.reconnectSandboxEnvironment,
+    stop: bridge.stopSandboxEnvironment,
+    destroy: bridge.destroySandboxEnvironment,
+  });
+}
+
+// A provision or resume already launched the server and minted a pairing
+// token, so the connect it leads to pairs with that token instead of
+// preparing the sandbox again.
+const FRESH_BOOTSTRAP_TTL_MS = 60_000;
+const freshSandboxBootstraps = new Map<
+  string,
+  { readonly bootstrap: DesktopSandboxEnvironmentBootstrap; readonly expiresAtEpochMs: number }
+>();
+const sandboxKey = (sandbox: DesktopSandboxRef) =>
+  JSON.stringify([sandbox.providerId, sandbox.sandboxId]);
+
+export const makeDesktopSandboxGateway = (
+  readBridge: () => DesktopBridge | undefined = () => window.desktopBridge,
+) =>
+  ClientCapabilities.SandboxEnvironmentGateway.of({
+    provision: Effect.fn("web.connectionPlatform.sandbox.provision")(function* (input) {
+      const bridge = yield* requireSandboxBridge(readBridge());
+      const result = yield* Effect.tryPromise({
+        try: () => bridge.ensure({ target: input.target, idempotencyKey: input.idempotencyKey }),
+        catch: sandboxBridgeError,
+      });
+      if ("type" in result) {
+        return yield* sandboxFailureError({ ...result, detail: provisionFailureDetail(result) });
+      }
+      freshSandboxBootstraps.set(sandboxKey(result.sandbox), {
+        bootstrap: result,
+        expiresAtEpochMs: (yield* Clock.currentTimeMillis) + FRESH_BOOTSTRAP_TTL_MS,
+      });
+      return result;
+    }),
+    prepare: Effect.fn("web.connectionPlatform.sandbox.prepare")(function* (input) {
+      const key = sandboxKey(input.sandbox);
+      const fresh = freshSandboxBootstraps.get(key);
+      freshSandboxBootstraps.delete(key);
+      if (fresh !== undefined && (yield* Clock.currentTimeMillis) < fresh.expiresAtEpochMs) {
+        return fresh.bootstrap;
+      }
+      const bridge = yield* requireSandboxBridge(readBridge());
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          bridge.reconnect({ target: input.target, sandbox: input.sandbox, resume: false }),
+        catch: sandboxBridgeError,
+      });
+      if (!("type" in result)) {
+        return result;
+      }
+      if (result.type === DesktopSandboxEnvironmentStoppedType) {
+        return yield* new ConnectionBlockedError({
+          reason: "configuration",
+          detail: SANDBOX_STOPPED_DETAIL,
+        });
+      }
+      return yield* sandboxFailureError(result);
+    }),
+    resume: Effect.fn("web.connectionPlatform.sandbox.resume")(function* (input) {
+      const bridge = yield* requireSandboxBridge(readBridge());
+      const result = yield* Effect.tryPromise({
+        try: () => bridge.reconnect({ target: input.target, sandbox: input.sandbox, resume: true }),
+        catch: sandboxBridgeError,
+      });
+      if (!("type" in result)) {
+        freshSandboxBootstraps.set(sandboxKey(input.sandbox), {
+          bootstrap: result,
+          expiresAtEpochMs: (yield* Clock.currentTimeMillis) + FRESH_BOOTSTRAP_TTL_MS,
+        });
+        return;
+      }
+      if (result.type === DesktopSandboxEnvironmentFailedType) {
+        return yield* sandboxFailureError(result);
+      }
+      // Only an automatic reconnect reports "stopped"; a resume starts it.
+      return yield* new ConnectionTransientError({
+        reason: "remote-unavailable",
+        detail: "The cloud sandbox did not start. Try again.",
+      });
+    }),
+    stop: Effect.fn("web.connectionPlatform.sandbox.stop")(function* (sandbox) {
+      const bridge = yield* requireSandboxBridge(readBridge());
+      freshSandboxBootstraps.delete(sandboxKey(sandbox));
+      const result = yield* Effect.tryPromise({
+        try: () => bridge.stop(sandbox),
+        catch: sandboxBridgeError,
+      });
+      if (result.type === DesktopSandboxEnvironmentFailedType) {
+        return yield* sandboxFailureError(result);
+      }
+    }),
+    destroy: Effect.fn("web.connectionPlatform.sandbox.destroy")(function* (sandbox) {
+      const bridge = yield* requireSandboxBridge(readBridge());
+      freshSandboxBootstraps.delete(sandboxKey(sandbox));
+      const result = yield* Effect.tryPromise({
+        try: () => bridge.destroy(sandbox),
+        catch: sandboxBridgeError,
+      });
+      if (result.type === DesktopSandboxEnvironmentFailedType) {
+        // Already deleted is what the user asked for.
+        if (result.failure === "not-found") return;
+        return yield* sandboxFailureError(result);
+      }
+    }),
+  });
+
+/**
  * Connects a saved SSH environment. A token from an earlier pairing is kept
  * while the host still accepts it with every standard scope, because every
  * pairing adds a session there.
@@ -410,6 +589,7 @@ const layerCapabilities = Layer.effectContext(
       Context.add(ClientCapabilities.RelayDeviceIdentity, identity),
       Context.add(ClientCapabilities.ClientPresentation, presentation),
       Context.add(ClientCapabilities.SshEnvironmentGateway, ssh),
+      Context.add(ClientCapabilities.SandboxEnvironmentGateway, makeDesktopSandboxGateway()),
     );
   }),
 );

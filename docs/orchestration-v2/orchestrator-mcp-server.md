@@ -437,6 +437,17 @@ Without `runId`, it selects the newest interruptible run. A terminal run is
 returned unchanged, and a thread with no active provider turn returns
 `no_active_run`.
 
+### Sandbox jobs
+
+`sandbox_job_start`, `sandbox_job_status`, `sandbox_job_send`,
+`sandbox_job_cancel`, `sandbox_job_complete`, `sandbox_job_discard`,
+`sandbox_job_list` and `sandbox_job_read` run work on a cloud sandbox node that
+keeps its disk across runs until the job is completed or discarded. They are
+off until the user enables sandbox jobs and saves a provider key and an agent
+key for them. Start, send, complete and discard need a full-access caller. When
+a run ends, the starting thread gets a queued message with its result. See
+[cloud sandboxes](../internals/cloud-sandboxes.md#sandbox-jobs).
+
 ## Delegated Task Lifecycle
 
 The MCP server is a command ingress into V2. It does not call provider adapters
@@ -530,7 +541,8 @@ orchestration_error
 - MCP services: `apps/server/src/mcp/OrchestratorMcpService.ts` and the focused
   `apps/server/src/mcp/ThreadMetadataMcpService.ts`
 - Tool definitions and handlers:
-  `apps/server/src/mcp/toolkits/orchestrator/`
+  `apps/server/src/mcp/toolkits/orchestrator/` (sandbox jobs:
+  `apps/server/src/mcp/toolkits/sandbox/`, `apps/server/src/sandbox/`)
 - HTTP registration and authentication:
   `apps/server/src/mcp/McpHttpServer.ts`
 - Credential lifecycle: `apps/server/src/mcp/McpSessionRegistry.ts`

@@ -39,11 +39,21 @@ export class SshConnectionTarget extends Schema.TaggedClass<SshConnectionTarget>
   },
 ) {}
 
+/** A cloud sandbox the desktop app provisioned and runs `t3 serve` in. */
+export class SandboxConnectionTarget extends Schema.TaggedClass<SandboxConnectionTarget>()(
+  "SandboxConnectionTarget",
+  {
+    ...ConnectionTargetBase,
+    connectionId: Schema.String,
+  },
+) {}
+
 export const ConnectionTarget = Schema.Union([
   PrimaryConnectionTarget,
   BearerConnectionTarget,
   RelayConnectionTarget,
   SshConnectionTarget,
+  SandboxConnectionTarget,
 ]);
 export type ConnectionTarget = typeof ConnectionTarget.Type;
 
@@ -51,6 +61,7 @@ export const PersistedConnectionTarget = Schema.Union([
   BearerConnectionTarget,
   RelayConnectionTarget,
   SshConnectionTarget,
+  SandboxConnectionTarget,
 ]);
 export type PersistedConnectionTarget = typeof PersistedConnectionTarget.Type;
 
@@ -156,7 +167,16 @@ export interface PreparedConnection {
   readonly socketUrl: string;
   readonly httpAuthorization: PreparedHttpAuthorization | null;
   readonly target: ConnectionTarget;
+  /**
+   * The environment's own origin, for its ports and webhooks, when `httpBaseUrl`
+   * relays through another environment; null when it has none this client reaches.
+   */
+  readonly directHttpBaseUrl?: string | null;
 }
+
+/** Where to reach the environment itself rather than its T3 API; null when nowhere. */
+export const preparedDirectHttpBaseUrl = (prepared: PreparedConnection): string | null =>
+  prepared.directHttpBaseUrl === undefined ? prepared.httpBaseUrl : prepared.directHttpBaseUrl;
 
 export type SupervisorConnectionPhase =
   | "available"

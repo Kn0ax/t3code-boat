@@ -6,18 +6,22 @@ import {
   BearerConnectionProfile,
   type ConnectionCatalogEntry,
   type ConnectionRoute,
+  SandboxConnectionProfile,
 } from "./catalog.ts";
 import { gitHubRoutingConnectionKey } from "./githubRoutingPermissions.ts";
-import { BearerConnectionTarget, RelayConnectionTarget } from "./model.ts";
+import { BearerConnectionTarget, RelayConnectionTarget, SandboxConnectionTarget } from "./model.ts";
 import {
   connectionRouteId,
   connectionRouteKind,
   connectionRouteLabel,
   credentialConnectionId,
+  findRouteToSameAddress,
+  hasSandboxRoute,
   insertRoute,
   entryWithRoutes,
   mergeLearnedRoutes,
   removedWithRelay,
+  routeHttpBaseUrl,
   routesAfterRemoving,
   sendsTokenInClear,
   upsertRoute,
@@ -49,6 +53,33 @@ const RELAY: ConnectionRoute = {
   target: new RelayConnectionTarget({ environmentId: ENVIRONMENT_ID, label: "Desk" }),
   profile: Option.none(),
 };
+function sandbox(id: string, sandboxId: string, providerUrl: string): ConnectionRoute {
+  return {
+    target: new SandboxConnectionTarget({
+      environmentId: ENVIRONMENT_ID,
+      label: "Agent box",
+      connectionId: id,
+    }),
+    profile: Option.some(
+      new SandboxConnectionProfile({
+        connectionId: id,
+        environmentId: ENVIRONMENT_ID,
+        label: "Agent box",
+        target: {
+          providerId: "boat",
+          label: "Agent box",
+          size: "small",
+          idleTimeoutMinutes: 30,
+          installAgentClis: true,
+          forwardGithubToken: false,
+        },
+        sandbox: { providerId: "boat", sandboxId },
+        providerUrl,
+      }),
+    ),
+  };
+}
+
 const LAN = direct("lan", "http://192.168.1.10:3773/");
 const TAILNET = direct("tailnet", "https://desk.tail1234.ts.net/");
 const PUBLIC = direct("public", "https://desk.example.com/");
@@ -81,6 +112,26 @@ describe("connection routes", () => {
     expect(insertRoute([LAN, RELAY], TAILNET)).toEqual([LAN, TAILNET, RELAY]);
     expect(insertRoute([TAILNET], LAN)).toEqual([LAN, TAILNET]);
     expect(insertRoute([LAN, TAILNET], RELAY)).toEqual([LAN, TAILNET, RELAY]);
+  });
+
+  it("classifies a cloud sandbox route by provider, whatever its URL", () => {
+    const route = sandbox("sandbox-1", "box-1", "https://3773-box-1.daytonaproxy01.net/");
+    expect(connectionRouteKind(route)).toBe("sandbox");
+    expect(connectionRouteLabel(route)).toBe("boat sandbox");
+    expect(insertRoute([RELAY], route)).toEqual([route, RELAY]);
+    expect(insertRoute([PUBLIC], route)).toEqual([PUBLIC, route]);
+    expect(hasSandboxRoute({ target: route.target })).toBe(true);
+    expect(hasSandboxRoute({ target: PUBLIC.target })).toBe(false);
+    // Only the desktop's forward reaches it; the provider URL is for display.
+    expect(routeHttpBaseUrl(route)).toBeNull();
+  });
+
+  it("matches a sandbox route by its provider sandbox, not its URL", () => {
+    const saved = sandbox("sandbox-1", "box-1", "https://3773-box-1.daytonaproxy01.net/");
+    const moved = sandbox("sandbox-2", "box-1", "https://3773-box-1.daytonaproxy02.net/");
+    const other = sandbox("sandbox-3", "box-2", "https://3773-box-1.daytonaproxy01.net/");
+    expect(findRouteToSameAddress([PUBLIC, saved], moved)).toBe(saved);
+    expect(findRouteToSameAddress([PUBLIC, saved], other)).toBeUndefined();
   });
 
   it("keeps a user's order when a saved route is replaced", () => {
@@ -422,6 +473,21 @@ describe("learned routes", () => {
       expect(profileOf(route)).toMatchObject({ authorization: "t3-connect" });
       expect(connectionRouteId(route.target)).not.toContain("@");
     }
+  });
+
+  it("does not learn addresses reported over a cloud sandbox route", () => {
+    const route = sandbox("sandbox-1", "box-1", "https://3773-box-1.daytonaproxy01.net/");
+    const entry = entryWithRoutes({ target: route.target, profile: route.profile, enabled: true }, [
+      route,
+    ]);
+    expect(
+      mergeLearnedRoutes({
+        entry,
+        activeRoute: route,
+        reported: [{ kind: "lan", httpBaseUrl: "http://172.17.0.2:3773/" }],
+        allowInsecure: true,
+      }),
+    ).toBeNull();
   });
 
   it("saves a scheme change on the same host as a new address", () => {

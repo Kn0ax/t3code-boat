@@ -9,6 +9,10 @@ import {
   type EnvironmentScopeRequiredError,
 } from "@t3tools/contracts";
 import * as HttpObservability from "@t3tools/shared/httpObservability";
+import { BOAT_PROXY_TOKEN_QUERY_PARAM, boatProxySandboxId } from "@t3tools/shared/boatProxy";
+import { normalizeHttpBaseUrl } from "../environment/endpoint.ts";
+import * as Redacted from "effect/Redacted";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -43,8 +47,8 @@ export class RemoteEnvironmentAuthUndeclaredStatusError extends Data.TaggedError
 }> {
   constructor(requestUrl: string, status: number) {
     super({
-      message: `Remote environment endpoint ${requestUrl} returned undeclared status ${status}.`,
-      requestUrl,
+      message: `Remote environment endpoint ${safeRequestUrl(requestUrl)} returned undeclared status ${status}.`,
+      requestUrl: safeRequestUrl(requestUrl),
       status,
     });
   }
@@ -59,8 +63,8 @@ export class RemoteEnvironmentAuthTimeoutError extends Data.TaggedError(
 }> {
   constructor(requestUrl: string, timeoutMs: number) {
     super({
-      message: `Remote environment endpoint ${requestUrl} timed out after ${timeoutMs}ms.`,
-      requestUrl,
+      message: `Remote environment endpoint ${safeRequestUrl(requestUrl)} timed out after ${timeoutMs}ms.`,
+      requestUrl: safeRequestUrl(requestUrl),
       timeoutMs,
     });
   }
@@ -86,17 +90,34 @@ export const layerRemoteHttpClient = (
     HttpObservability.layer,
   );
 
-const remoteApiBaseUrl = (httpBaseUrl: string): string => {
-  const url = new URL(httpBaseUrl);
-  url.pathname = "/";
-  url.search = "";
-  url.hash = "";
+const remoteApiBaseUrl = normalizeHttpBaseUrl;
+
+const proxyToken = (baseUrl: string) =>
+  boatProxySandboxId(baseUrl) === undefined
+    ? null
+    : new URL(baseUrl).searchParams.get(BOAT_PROXY_TOKEN_QUERY_PARAM);
+
+const proxyHttpClient = (baseUrl: string) => (client: HttpClient.HttpClient) => {
+  const token = proxyToken(baseUrl);
+  return token === null
+    ? client
+    : client.pipe(
+        HttpClient.mapRequest(
+          HttpClientRequest.setUrlParam(BOAT_PROXY_TOKEN_QUERY_PARAM, Redacted.make(token)),
+        ),
+      );
+};
+
+const safeRequestUrl = (requestUrl: string) => {
+  const url = new URL(requestUrl);
+  url.searchParams.delete(BOAT_PROXY_TOKEN_QUERY_PARAM);
   return url.toString();
 };
 
 export const makeEnvironmentHttpApiClient = (httpBaseUrl: string) =>
   HttpApiClient.make(EnvironmentHttpApi, {
     baseUrl: remoteApiBaseUrl(httpBaseUrl),
+    transformClient: proxyHttpClient(httpBaseUrl),
   });
 
 export const makeEnvironmentHttpApiGroupClient = <
@@ -107,16 +128,31 @@ export const makeEnvironmentHttpApiGroupClient = <
 ) =>
   Effect.flatMap(HttpClient.HttpClient, (httpClient) =>
     HttpApiClient.group(EnvironmentHttpApi, {
-      httpClient,
+      httpClient: proxyHttpClient(httpBaseUrl)(httpClient),
       group,
       baseUrl: remoteApiBaseUrl(httpBaseUrl),
     }),
   );
 
-export const makeEnvironmentHttpApiUrlBuilder = (httpBaseUrl: string) =>
-  HttpApiClient.urlBuilder(EnvironmentHttpApi, {
+export const makeEnvironmentHttpApiUrlBuilder = (httpBaseUrl: string) => {
+  const builder = HttpApiClient.urlBuilder(EnvironmentHttpApi, {
     baseUrl: remoteApiBaseUrl(httpBaseUrl),
   });
+  const token = proxyToken(httpBaseUrl);
+  if (token === null) return builder;
+  for (const group of Object.values(builder)) {
+    for (const [name, build] of Object.entries(group)) {
+      Object.defineProperty(group, name, {
+        value: (...args: unknown[]) => {
+          const url = new URL(Reflect.apply(build, group, args));
+          url.searchParams.set(BOAT_PROXY_TOKEN_QUERY_PARAM, token);
+          return url.toString();
+        },
+      });
+    }
+  }
+  return builder;
+};
 
 const failRemoteRequest = (
   requestUrl: string,
@@ -131,7 +167,7 @@ const failRemoteRequest = (
   if (Schema.isSchemaError(cause)) {
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
-        message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
+        message: `Remote environment endpoint returned an invalid response from ${safeRequestUrl(requestUrl)}.`,
         cause,
       }),
     );
@@ -145,14 +181,14 @@ const failRemoteRequest = (
     }
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
-        message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
+        message: `Remote environment endpoint returned an invalid response from ${safeRequestUrl(requestUrl)}.`,
         cause,
       }),
     );
   }
   return Effect.fail(
     new RemoteEnvironmentAuthFetchError({
-      message: `Failed to fetch remote environment endpoint ${requestUrl} (${String(cause)}).`,
+      message: `Failed to fetch remote environment endpoint ${safeRequestUrl(requestUrl)}.`,
       cause,
     }),
   );

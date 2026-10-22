@@ -1,3 +1,4 @@
+import { boatProxySandboxId, withBoatProxyToken } from "@t3tools/shared/boatProxy";
 import type {
   AuthClientPresentationMetadata,
   ExecutionEnvironmentDescriptor,
@@ -21,6 +22,7 @@ import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   type ConnectionCatalogEntry,
+  SandboxConnectionProfile,
   SshConnectionProfile,
 } from "./catalog.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
@@ -40,6 +42,7 @@ import type {
   PreparedConnection,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SandboxConnectionTarget,
   SshConnectionTarget,
 } from "./model.ts";
 import { ConnectionBlockedError, type ConnectionAttemptError } from "./model.ts";
@@ -49,6 +52,7 @@ import {
   orchestrationProtocolCompatibilityError,
 } from "./compatibility.ts";
 import { credentialConnectionId } from "./routes.ts";
+import { pairSandboxEnvironment, sandboxUnavailableError } from "./sandbox.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
 
 export class ConnectionResolver extends Context.Service<
@@ -73,6 +77,7 @@ export class ConnectionResolver extends Context.Service<
 
 const isBearerProfile = Schema.is(BearerConnectionProfile);
 const isSshProfile = Schema.is(SshConnectionProfile);
+const isSandboxProfile = Schema.is(SandboxConnectionProfile);
 const isBearerCredential = Schema.is(BearerConnectionCredential);
 
 function primarySocketUrl(
@@ -163,10 +168,24 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
     if (!isBearerCredential(credential)) {
       return yield* credentialMissingError(target.connectionId);
     }
+    if (
+      profile.boatProxy !== undefined &&
+      (credential.proxyToken === undefined ||
+        boatProxySandboxId(profile.httpBaseUrl) !== profile.boatProxy.sandboxId ||
+        boatProxySandboxId(profile.wsBaseUrl) !== profile.boatProxy.sandboxId)
+    ) {
+      return yield* credentialMissingError(target.connectionId);
+    }
     const authorized = yield* remote.authorizeBearer({
       expectedEnvironmentId: target.environmentId,
-      httpBaseUrl: profile.httpBaseUrl,
-      wsBaseUrl: profile.wsBaseUrl,
+      httpBaseUrl:
+        profile.boatProxy === undefined
+          ? profile.httpBaseUrl
+          : withBoatProxyToken(profile.httpBaseUrl, credential.proxyToken ?? ""),
+      wsBaseUrl:
+        profile.boatProxy === undefined
+          ? profile.wsBaseUrl
+          : withBoatProxyToken(profile.wsBaseUrl, credential.proxyToken!),
       bearerToken: credential.token,
       connectionMethod: "direct",
     });
@@ -177,6 +196,9 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
       socketUrl: authorized.socketUrl,
       httpAuthorization: authorized.httpAuthorization,
       target,
+      ...(profile.boatProxy === undefined
+        ? {}
+        : { directHttpBaseUrl: profile.boatProxy.tailnetHttpBaseUrl ?? null }),
     } satisfies PreparedConnection;
   });
 });
@@ -275,12 +297,94 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
   });
 });
 
+/**
+ * Like SSH, a sandbox route always connects through the desktop: it makes
+ * sure `t3 serve` runs, opens the sandbox's loopback forward and mints a
+ * fresh pairing token, which this client then redeems through the forward.
+ */
+const makeSandboxBroker = Effect.fn("clientRuntime.connection.broker.makeSandbox")(function* () {
+  const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
+  const gateway = yield* Effect.serviceOption(ClientCapabilities.SandboxEnvironmentGateway);
+  const presentation = yield* ClientCapabilities.ClientPresentation;
+  const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
+  const httpClient = yield* HttpClient.HttpClient;
+
+  return Effect.fn("clientRuntime.connection.broker.sandbox")(function* (
+    entry: ConnectionCatalogEntry & { readonly target: SandboxConnectionTarget },
+  ) {
+    const target = entry.target;
+    const profile = yield* Effect.fromOption(entry.profile, () =>
+      profileMissingError(target.connectionId),
+    );
+    if (!isSandboxProfile(profile)) {
+      return yield* new ConnectionBlockedError({
+        reason: "configuration",
+        detail: `Connection profile ${target.connectionId} is not a cloud sandbox connection.`,
+      });
+    }
+    if (profile.environmentId !== target.environmentId) {
+      return yield* environmentMismatchError({
+        expected: target.environmentId,
+        actual: profile.environmentId,
+      });
+    }
+    if (Option.isNone(gateway)) {
+      return yield* sandboxUnavailableError();
+    }
+    const bootstrap = yield* gateway.value.prepare({
+      connectionId: target.connectionId,
+      expectedEnvironmentId: target.environmentId,
+      target: profile.target,
+      sandbox: profile.sandbox,
+    });
+    const paired = yield* pairSandboxEnvironment({
+      bootstrap,
+      expectedEnvironmentId: target.environmentId,
+    }).pipe(
+      Effect.provideService(ClientCapabilities.ClientPresentation, presentation),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    const preparedProfile = new SandboxConnectionProfile({
+      connectionId: profile.connectionId,
+      environmentId: profile.environmentId,
+      label: profile.label,
+      target: profile.target,
+      sandbox: bootstrap.sandbox,
+      providerUrl: bootstrap.providerUrl,
+    });
+    if (
+      gitHubRoutingConnectionKey(entry) !==
+      gitHubRoutingConnectionKey({ ...entry, profile: Option.some(preparedProfile) })
+    ) {
+      const permissions = yield* GitHubRoutingPermissions;
+      yield* permissions.forget(target.environmentId);
+    }
+    yield* profiles.put(preparedProfile);
+    const authorized = yield* remote.authorizeBearer({
+      expectedEnvironmentId: target.environmentId,
+      httpBaseUrl: bootstrap.httpBaseUrl,
+      wsBaseUrl: bootstrap.wsBaseUrl,
+      bearerToken: paired.bearerToken,
+      connectionMethod: "direct",
+    });
+    return {
+      environmentId: authorized.environmentId,
+      label: authorized.label,
+      httpBaseUrl: authorized.httpBaseUrl,
+      socketUrl: authorized.socketUrl,
+      httpAuthorization: authorized.httpAuthorization,
+      target,
+    } satisfies PreparedConnection;
+  });
+});
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const primary = yield* makePrimaryBroker();
   const bearer = yield* makeBearerBroker();
   const relay = yield* makeRelayBroker();
   const ssh = yield* makeSshBroker();
+  const sandbox = yield* makeSandboxBroker();
   const httpClient = yield* HttpClient.HttpClient;
 
   const authorize = Effect.fn("clientRuntime.connection.broker.authorize")(function* (
@@ -301,6 +405,8 @@ export const make = Effect.gen(function* () {
           return relay(target);
         case "SshConnectionTarget":
           return ssh({ ...entry, target });
+        case "SandboxConnectionTarget":
+          return sandbox({ ...entry, target });
       }
     })();
     const descriptor = yield* fetchRemoteEnvironmentDescriptor({

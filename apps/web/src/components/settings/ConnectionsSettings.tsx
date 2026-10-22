@@ -3,6 +3,7 @@ import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/aut
 import {
   ChevronRightIcon,
   ChevronsLeftRightEllipsisIcon,
+  CloudIcon,
   EllipsisIcon,
   PlusIcon,
   QrCodeIcon,
@@ -53,6 +54,8 @@ import {
   hasSavedBearerRoute,
   connectionStatusText,
   environmentMcpUrl,
+  resolveConnectionMachineKind,
+  sandboxProviderLabel,
 } from "@t3tools/client-runtime/connection";
 import {
   isAtomCommandInterrupted,
@@ -93,6 +96,9 @@ import {
   ConnectionDiagnosisSummary,
   useConnectionDiagnosis,
 } from "./ConnectionDiagnosisDetails";
+import { CloudSandboxEnvironmentForm, readSandboxBridge } from "./CloudSandboxEnvironmentForm";
+import { SandboxEnvironmentMenuItems } from "./SandboxEnvironmentMenuItems";
+import { savedSandboxProfile } from "./CloudSandboxSettings.logic";
 import { usePreparedConnection } from "~/state/session";
 import {
   EnvironmentRow,
@@ -1564,7 +1570,8 @@ function SavedBackendListRow({
     relayHttpBaseUrl: discoveredRelayHttpBaseUrl ?? lastRelayHttpBaseUrl,
     connectedTarget,
   });
-  const machineKind = resolveEnvironmentMachineKind(
+  const machineKind = resolveConnectionMachineKind(
+    environment.entry,
     environment.serverConfig ??
       (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
@@ -1784,6 +1791,7 @@ function SavedBackendListRow({
           {errorTraceId ? (
             <MenuItem onClick={() => copyTraceId(errorTraceId)}>Copy trace ID</MenuItem>
           ) : null}
+          <SandboxEnvironmentMenuItems environment={environment} />
           <MenuSeparator />
           <MenuItem variant="destructive" onClick={() => onRemove(environment)}>
             {isRemoving ? "Removing…" : "Remove from this device…"}
@@ -2193,7 +2201,8 @@ export function ConnectionsSettings() {
   const [isRevokingOtherDesktopClients, setIsRevokingOtherDesktopClients] = useState(false);
   const [addBackendDialogOpen, setAddBackendDialogOpen] = useState(false);
   const [routeTarget, setRouteTarget] = useState<EnvironmentPresentation | null>(null);
-  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh">("remote");
+  const [savedBackendMode, setSavedBackendMode] = useState<"remote" | "ssh" | "sandbox">("remote");
+  const sandboxBridge = readSandboxBridge(desktopBridge);
   const [savedBackendHost, setSavedBackendHost] = useState("");
   const [savedBackendPairingCode, setSavedBackendPairingCode] = useState("");
   const [savedBackendSshHost, setSavedBackendSshHost] = useState("");
@@ -2769,8 +2778,13 @@ export function ConnectionsSettings() {
       setPendingT3ConnectRemoval(environment);
       return;
     }
+    const sandbox = savedSandboxProfile(environment.entry);
     const confirmed = await requestConfirmDialog(
-      `Remove ${environment.label} from this device?\nThis forgets its pairing, credentials, and cached threads here. Switch it off instead to keep it saved.`,
+      `Remove ${environment.label} from this device?\nThis forgets its pairing, credentials, and cached threads here. Switch it off instead to keep it saved.${
+        sandbox === null
+          ? ""
+          : `\nThe ${sandboxProviderLabel(sandbox.sandbox.providerId)} sandbox keeps running, and billing. Use Delete sandbox in the row's menu to remove it as well.`
+      }`,
       { variant: "destructive" },
     );
     if (confirmed === true) await removeSavedBackend(environment);
@@ -2811,7 +2825,7 @@ export function ConnectionsSettings() {
   };
 
   const renderConnectionModeCard = (input: {
-    readonly mode: "remote" | "ssh";
+    readonly mode: "remote" | "ssh" | "sandbox";
     readonly title: string;
     readonly description: string;
     readonly icon?: ReactNode;
@@ -3916,6 +3930,10 @@ export function ConnectionsSettings() {
     </>
   );
 
+  // A sandbox is a machine of its own, so it is never offered as another route.
+  const showSandboxMode = sandboxBridge !== null && routeTarget === null;
+  const handleSandboxConnected = () => setAddBackendDialogOpen(false);
+
   return (
     <SettingsPageContainer>
       {primarySettings}
@@ -3966,7 +3984,12 @@ export function ConnectionsSettings() {
                 </DialogHeader>
                 <DialogPanel>
                   <div className="space-y-4">
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div
+                      className={cn(
+                        "grid gap-3",
+                        showSandboxMode ? "sm:grid-cols-3" : "sm:grid-cols-2",
+                      )}
+                    >
                       {renderConnectionModeCard({
                         mode: "remote",
                         title: "Remote link",
@@ -3982,9 +4005,27 @@ export function ConnectionsSettings() {
                             icon: <TerminalIcon aria-hidden className="size-4" />,
                           })
                         : null}
+                      {showSandboxMode
+                        ? renderConnectionModeCard({
+                            mode: "sandbox",
+                            title: "Cloud sandbox",
+                            description: "Create a boat sandbox that runs T3 Code.",
+                            icon: <CloudIcon aria-hidden className="size-4" />,
+                          })
+                        : null}
                     </div>
                     <AnimatedHeight>
-                      {savedBackendMode === "ssh" ? renderSshFields() : renderRemoteModeBody()}
+                      {savedBackendMode === "sandbox" && showSandboxMode && sandboxBridge ? (
+                        <CloudSandboxEnvironmentForm
+                          bridge={sandboxBridge}
+                          onBusyChange={setIsAddingSavedBackend}
+                          onConnected={handleSandboxConnected}
+                        />
+                      ) : savedBackendMode === "ssh" ? (
+                        renderSshFields()
+                      ) : (
+                        renderRemoteModeBody()
+                      )}
                     </AnimatedHeight>
                   </div>
                 </DialogPanel>
@@ -4002,6 +4043,7 @@ export function ConnectionsSettings() {
             onRemove={handleRemoveSavedBackend}
             onAddRoute={(target) => {
               setRouteTarget(target);
+              setSavedBackendMode((mode) => (mode === "sandbox" ? "remote" : mode));
               setSavedBackendError(null);
               setAddBackendDialogOpen(true);
             }}

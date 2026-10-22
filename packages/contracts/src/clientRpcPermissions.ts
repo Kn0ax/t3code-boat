@@ -43,6 +43,14 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.vcsSwitchRef]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsInit]: AuthSourceControlWriteScope,
 
+  // Spends money on the server's boat account.
+  [WS_METHODS.boatVmsLaunch]: AuthOrchestrationOperateScope,
+  // Resumes a stopped VM and writes refs into a local repository.
+  [WS_METHODS.boatVmsBringHome]: AuthOrchestrationOperateScope,
+  // Writes a snapshot to the server's boat account, replacing one of the same name.
+  [WS_METHODS.boatVmsSaveSnapshot]: AuthOrchestrationOperateScope,
+  // Removes a new VM the launch made.
+  [WS_METHODS.boatVmsCancelLaunch]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,

@@ -3,7 +3,7 @@ import {
   createAtomCommandScheduler,
   createRuntimeCommand,
 } from "@t3tools/client-runtime/state/runtime";
-import type { DesktopSshEnvironmentTarget } from "@t3tools/contracts";
+import type { DesktopSshEnvironmentTarget, EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { connectionAtomRuntime } from "./runtime";
@@ -33,5 +33,54 @@ export const connectSshEnvironment = createRuntimeCommand(connectionAtomRuntime,
   execute: (input: ConnectionOnboarding.SshConnectionInput) =>
     ConnectionOnboarding.ConnectionOnboarding.pipe(
       Effect.flatMap((onboarding) => onboarding.registerSsh(input)),
+    ),
+});
+
+export const connectSandboxEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "web:connection:connect-sandbox",
+  scheduler: onboardingScheduler,
+  concurrency: {
+    // One attempt per key: a double click adopts the same sandbox, never a second one.
+    mode: "singleFlight",
+    key: (input: ConnectionOnboarding.SandboxConnectionInput) => input.idempotencyKey,
+  },
+  execute: (input: ConnectionOnboarding.SandboxConnectionInput) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.registerSandbox(input)),
+    ),
+});
+
+const sandboxControlConcurrency = {
+  mode: "serial" as const,
+  key: (environmentId: EnvironmentId) => environmentId,
+};
+
+export const resumeSandboxEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "web:connection:resume-sandbox",
+  scheduler: onboardingScheduler,
+  concurrency: sandboxControlConcurrency,
+  execute: (environmentId: EnvironmentId) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.resumeSandbox(environmentId)),
+    ),
+});
+
+export const stopSandboxEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "web:connection:stop-sandbox",
+  scheduler: onboardingScheduler,
+  concurrency: sandboxControlConcurrency,
+  execute: (environmentId: EnvironmentId) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.stopSandbox(environmentId)),
+    ),
+});
+
+export const destroySandboxEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "web:connection:destroy-sandbox",
+  scheduler: onboardingScheduler,
+  concurrency: sandboxControlConcurrency,
+  execute: (environmentId: EnvironmentId) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.destroySandbox(environmentId)),
     ),
 });

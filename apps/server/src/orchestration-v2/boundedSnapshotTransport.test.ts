@@ -43,6 +43,7 @@ import { subscribeOrchestrationV2Thread } from "../ws.ts";
 import * as OrchestrationHttp from "./http.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ThreadImportService from "./ThreadImportService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 
 const decodeBounded = Schema.decodeUnknownSync(
@@ -239,6 +240,7 @@ const withHttp = <A>(use: (get: (path: string) => Promise<Response>) => Promise<
     const context = yield* Effect.context<Layer.Success<typeof TestLayer>>();
     const appLayer = HttpApiBuilder.layer(OrchestrationApi).pipe(
       Layer.provide(OrchestrationHttp.layer),
+      Layer.provide(Layer.mock(ThreadImportService.ThreadImportService)({})),
       Layer.provide(auth),
       Layer.provide(Layer.succeedContext(context)),
       Layer.provide(NodeHttpPlatform.layer),

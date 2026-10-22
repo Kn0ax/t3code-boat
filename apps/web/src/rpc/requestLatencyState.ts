@@ -31,10 +31,12 @@ interface PendingRpcAckRequest {
 
 const pendingRpcAckRequests = new Map<string, PendingRpcAckRequest>();
 // Background reports nobody waits on. A busy host delays them first, and warning
-// about a request the user never made does not say what is wrong.
+// about a request the user never made does not say what is wrong. Starting a
+// boat VM takes minutes and shows its own progress toast.
 const untrackedRpcAckMethods = new Set<string>([
   WS_METHODS.serverGetUsageSummary,
   WS_METHODS.serverReportClientActivity,
+  WS_METHODS.boatVmsLaunch,
 ]);
 const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverUpdateProvider,

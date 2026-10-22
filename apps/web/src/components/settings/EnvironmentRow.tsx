@@ -45,6 +45,10 @@ export function environmentTransportLabel(
   ) {
     return `SSH ${formatDesktopSshTarget(entry.profile.value.target)}`;
   }
+  if (entry.target._tag === "SandboxConnectionTarget") {
+    // The sandbox's proxy URL says nothing a person recognizes; its provider does.
+    return connectionRouteLabel({ target: entry.target, profile: entry.profile });
+  }
   return environment.displayUrl ?? "Remote link";
 }
 

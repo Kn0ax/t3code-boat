@@ -43,6 +43,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./boatProxy": {
+      "types": "./src/boatProxy.ts",
+      "import": "./src/boatProxy.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
@@ -350,6 +354,10 @@
     "./httpReadiness": {
       "types": "./src/httpReadiness.ts",
       "import": "./src/httpReadiness.ts"
+    },
+    "./t3Home": {
+      "types": "./src/t3Home.ts",
+      "import": "./src/t3Home.ts"
     },
     "./devHome": {
       "types": "./src/devHome.ts",

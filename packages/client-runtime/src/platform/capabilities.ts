@@ -1,5 +1,8 @@
 import {
   type AuthClientPresentationMetadata,
+  type DesktopSandboxEnvironmentBootstrap,
+  type DesktopSandboxEnvironmentTarget,
+  type DesktopSandboxRef,
   type DesktopSshEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
@@ -93,3 +96,45 @@ export class SshEnvironmentGateway extends Context.Service<
     ) => Effect.Effect<void, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/platform/capabilities/SshEnvironmentGateway") {}
+
+/**
+ * Cloud sandboxes, provisioned by the platform (the desktop main process) so
+ * provider API keys stay there. Shaped like `SshEnvironmentGateway`, except
+ * that it returns the bootstrap with its pairing token unspent: the sandbox's
+ * public URL is reachable from the client, which checks it and pairs itself.
+ * Clients without the capability cannot use sandbox routes.
+ */
+export class SandboxEnvironmentGateway extends Context.Service<
+  SandboxEnvironmentGateway,
+  {
+    /**
+     * Creates a sandbox and brings a paired `t3 serve` up in it. Retrying
+     * with the same `idempotencyKey` adopts the sandbox an earlier attempt
+     * created instead of paying for a second one.
+     */
+    readonly provision: (input: {
+      readonly target: DesktopSandboxEnvironmentTarget;
+      readonly idempotencyKey: string;
+    }) => Effect.Effect<DesktopSandboxEnvironmentBootstrap, ConnectionAttemptError>;
+    /**
+     * Makes sure `t3 serve` runs in a saved sandbox and mints a fresh pairing
+     * token. A stopped sandbox is not started: that fails as blocked, so an
+     * automatic reconnect never resumes (and bills) a sandbox on its own.
+     */
+    readonly prepare: (input: {
+      readonly connectionId: string;
+      readonly expectedEnvironmentId: EnvironmentId;
+      readonly target: DesktopSandboxEnvironmentTarget;
+      readonly sandbox: DesktopSandboxRef;
+    }) => Effect.Effect<DesktopSandboxEnvironmentBootstrap, ConnectionAttemptError>;
+    /** Starts a stopped sandbox and its server, at the user's request. */
+    readonly resume: (input: {
+      readonly target: DesktopSandboxEnvironmentTarget;
+      readonly sandbox: DesktopSandboxRef;
+    }) => Effect.Effect<void, ConnectionAttemptError>;
+    /** Stops `t3 serve` and the sandbox; its disk is kept. */
+    readonly stop: (sandbox: DesktopSandboxRef) => Effect.Effect<void, ConnectionAttemptError>;
+    /** Deletes the sandbox and its disk. Already deleted counts as done. */
+    readonly destroy: (sandbox: DesktopSandboxRef) => Effect.Effect<void, ConnectionAttemptError>;
+  }
+>()("@t3tools/client-runtime/platform/capabilities/SandboxEnvironmentGateway") {}

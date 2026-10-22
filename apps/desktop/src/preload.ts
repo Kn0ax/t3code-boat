@@ -176,6 +176,20 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   resolveSshPasswordPrompt: (requestId, password) =>
     ipcRenderer.invoke(IpcChannels.RESOLVE_SSH_PASSWORD_PROMPT_CHANNEL, { requestId, password }),
+  ensureSandboxEnvironment: (input) =>
+    ipcRenderer.invoke(IpcChannels.ENSURE_SANDBOX_ENVIRONMENT_CHANNEL, input),
+  reconnectSandboxEnvironment: (input) =>
+    ipcRenderer.invoke(IpcChannels.RECONNECT_SANDBOX_ENVIRONMENT_CHANNEL, input),
+  stopSandboxEnvironment: (sandbox) =>
+    ipcRenderer.invoke(IpcChannels.STOP_SANDBOX_ENVIRONMENT_CHANNEL, sandbox),
+  destroySandboxEnvironment: (sandbox) =>
+    ipcRenderer.invoke(IpcChannels.DESTROY_SANDBOX_ENVIRONMENT_CHANNEL, sandbox),
+  setSandboxProviderCredential: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_SANDBOX_PROVIDER_CREDENTIAL_CHANNEL, input),
+  clearSandboxProviderCredential: (providerId) =>
+    ipcRenderer.invoke(IpcChannels.CLEAR_SANDBOX_PROVIDER_CREDENTIAL_CHANNEL, providerId),
+  hasSandboxProviderCredential: (providerId) =>
+    ipcRenderer.invoke(IpcChannels.HAS_SANDBOX_PROVIDER_CREDENTIAL_CHANNEL, providerId),
   getServerExposureState: () => ipcRenderer.invoke(IpcChannels.GET_SERVER_EXPOSURE_STATE_CHANNEL),
   setServerExposureMode: (mode) =>
     ipcRenderer.invoke(IpcChannels.SET_SERVER_EXPOSURE_MODE_CHANNEL, mode),
@@ -271,6 +285,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
   downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
   installUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL),
+  getT3DataImport: () => ipcRenderer.invoke(IpcChannels.GET_T3_DATA_IMPORT_CHANNEL),
+  importT3Data: (input) => ipcRenderer.invoke(IpcChannels.IMPORT_T3_DATA_CHANNEL, input),
   cliCommand: {
     getState: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_GET_STATE_CHANNEL),
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),

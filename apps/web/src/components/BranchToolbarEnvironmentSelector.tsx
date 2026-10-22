@@ -153,11 +153,19 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
             <SelectItem
               key={env.environmentId}
               value={environmentValue(env.environmentId)}
-              disabled={onEnvironmentChange === undefined && env.environmentId !== environmentId}
+              disabled={
+                (onEnvironmentChange === undefined && env.environmentId !== environmentId) ||
+                env.disabledReason !== undefined
+              }
             >
-              <span className="inline-flex items-center gap-1.5">
-                <EnvironmentMachineIcon kind={env.machine} className="size-3" />
-                {env.label}
+              <span className="flex flex-col">
+                <span className="inline-flex items-center gap-1.5">
+                  <EnvironmentMachineIcon kind={env.machine} className="size-3" />
+                  {env.label}
+                </span>
+                {env.disabledReason !== undefined ? (
+                  <span className="text-muted-foreground text-xs">{env.disabledReason}</span>
+                ) : null}
               </span>
             </SelectItem>
           ))}

@@ -24,10 +24,14 @@ export const resolveDeviceHubAccess = Effect.fn("clientRuntime.state.resolveDevi
     readonly prepared: PreparedConnection;
     readonly hubBasePath: string;
   }): Effect.fn.Return<DeviceHubAccess, RemoteEnvironmentRequestError, HttpClient.HttpClient> {
-    const httpBase = environmentEndpointUrl(input.prepared.httpBaseUrl, input.hubBasePath);
+    const endpoint = new URL(environmentEndpointUrl(input.prepared.httpBaseUrl, input.hubBasePath));
+    // A relay capability rides in the base query; callers append paths to the base.
+    const baseQuery = Object.fromEntries(endpoint.searchParams);
+    endpoint.search = "";
+    const httpBase = endpoint.toString();
     const wsBase = httpBase.replace(/^http/, "ws");
     if (input.prepared.httpAuthorization === null) {
-      return { httpBase, wsBase, query: {}, credentials: true };
+      return { httpBase, wsBase, query: baseQuery, credentials: true };
     }
     const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
     const remoteAuthorization = yield* Effect.serviceOption(
@@ -46,7 +50,7 @@ export const resolveDeviceHubAccess = Effect.fn("clientRuntime.state.resolveDevi
     return {
       httpBase,
       wsBase,
-      query: { wsTicket: ticket.ticket },
+      query: { ...baseQuery, wsTicket: ticket.ticket },
       credentials: false,
     };
   },

@@ -1,4 +1,9 @@
-import type { DesktopSshEnvironmentTarget, EnvironmentId } from "@t3tools/contracts";
+import { boatProxySandboxId, withBoatProxyToken } from "@t3tools/shared/boatProxy";
+import type {
+  DesktopSandboxEnvironmentTarget,
+  DesktopSshEnvironmentTarget,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -18,6 +23,8 @@ import {
   BearerConnectionRegistration,
   type ConnectionCatalogEntry,
   type ConnectionCredential,
+  SandboxConnectionProfile,
+  SandboxConnectionRegistration,
   SshConnectionProfile,
   SshConnectionRegistration,
 } from "./catalog.ts";
@@ -26,6 +33,7 @@ import { mapRemoteEnvironmentError } from "./errors.ts";
 import {
   BearerConnectionTarget,
   ConnectionBlockedError,
+  SandboxConnectionTarget,
   SshConnectionTarget,
   type ConnectionAttemptError,
 } from "./model.ts";
@@ -33,8 +41,26 @@ import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import { connectionRoutes, routeEntry, sshTargetKey } from "./routes.ts";
+import {
+  describeSandboxEnvironment,
+  sandboxConnectionId,
+  sandboxProviderLabel,
+  sandboxUnavailableError,
+  withKeptSandboxDetail,
+} from "./sandbox.ts";
+
+export type SandboxControlError =
+  | ConnectionAttemptError
+  | Persistence.ConnectionPersistenceError
+  | EnvironmentRegistry.EnvironmentNotRegisteredError;
 
 export interface PairingConnectionInput {
+  readonly boatVm?: { readonly sandboxId: string; readonly hostEnvironmentId: EnvironmentId };
+  readonly boatProxy?: {
+    readonly sandboxId: string;
+    readonly token: string;
+    readonly tailnetHttpBaseUrl?: string;
+  };
   readonly pairingUrl?: string;
   readonly host?: string;
   readonly pairingCode?: string;
@@ -45,6 +71,16 @@ export interface SshConnectionInput {
   readonly target: DesktopSshEnvironmentTarget;
   readonly label?: string;
   readonly expectedEnvironmentId?: EnvironmentId;
+}
+
+export interface SandboxConnectionInput {
+  readonly target: DesktopSandboxEnvironmentTarget;
+  /**
+   * Identifies one "add" attempt: retrying it after a failure adopts the
+   * sandbox the first try created instead of paying for another.
+   */
+  readonly idempotencyKey: string;
+  readonly label?: string;
 }
 
 export interface BearerConnectionUpdateInput {
@@ -71,6 +107,31 @@ export class ConnectionOnboarding extends Context.Service<
     readonly updateBearer: (
       input: BearerConnectionUpdateInput,
     ) => Effect.Effect<void, ConnectionAttemptError | Persistence.ConnectionPersistenceError>;
+    /** Creates a cloud sandbox, starts T3 in it, pairs, and saves it as a new environment. */
+    readonly registerSandbox: (
+      input: SandboxConnectionInput,
+    ) => Effect.Effect<
+      EnvironmentId,
+      ConnectionAttemptError | Persistence.ConnectionPersistenceError
+    >;
+    /** Starts a stopped sandbox, switches its environment on, and connects. */
+    readonly resumeSandbox: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, SandboxControlError>;
+    /**
+     * Switches the environment off, then stops its sandbox, so nothing
+     * reconnects (and restarts it) until the user resumes it.
+     */
+    readonly stopSandbox: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, SandboxControlError>;
+    /** Deletes the sandbox at its provider, then forgets the environment here. */
+    readonly destroySandbox: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<
+      void,
+      SandboxControlError | EnvironmentRegistry.PlatformEnvironmentRemovalError
+    >;
   }
 >()("@t3tools/client-runtime/connection/onboarding/ConnectionOnboarding") {}
 
@@ -88,7 +149,12 @@ const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.reso
 );
 
 function bearerConnectionId(environmentId: EnvironmentId, httpBaseUrl: string): string {
-  return `bearer:${environmentId}:${new URL(httpBaseUrl).origin}`;
+  const sandboxId = boatProxySandboxId(httpBaseUrl);
+  // A relayed VM keeps one route at whatever address its host was reached, so a
+  // relaunch from another address replaces the stale route instead of adding one.
+  return sandboxId === undefined
+    ? `bearer:${environmentId}:${new URL(httpBaseUrl).origin}`
+    : `bearer:${environmentId}:boat-proxy:${sandboxId}`;
 }
 
 function differentMachineError(label: string) {
@@ -103,8 +169,21 @@ export const preparePairingRegistration = Effect.fn(
 )(function* (input: PairingConnectionInput) {
   const target = yield* resolvePairingTarget(input);
   const presentation = yield* ClientCapabilities.ClientPresentation;
+  if (
+    input.boatProxy !== undefined &&
+    boatProxySandboxId(target.httpBaseUrl) !== input.boatProxy.sandboxId
+  ) {
+    return yield* new ConnectionBlockedError({
+      reason: "configuration",
+      detail: "The Boat proxy does not match this VM.",
+    });
+  }
+  const requestBaseUrl =
+    input.boatProxy === undefined
+      ? target.httpBaseUrl
+      : withBoatProxyToken(target.httpBaseUrl, input.boatProxy.token);
   const descriptor = yield* fetchRemoteEnvironmentDescriptor({
-    httpBaseUrl: target.httpBaseUrl,
+    httpBaseUrl: requestBaseUrl,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
   // Checked before redeeming the one-time code, so a wrong link is not spent.
   if (
@@ -119,7 +198,7 @@ export const preparePairingRegistration = Effect.fn(
     return yield* compatibilityError;
   }
   const access = yield* bootstrapRemoteBearerSession({
-    httpBaseUrl: target.httpBaseUrl,
+    httpBaseUrl: requestBaseUrl,
     credential: target.credential,
     clientMetadata: presentation.metadata,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
@@ -137,9 +216,21 @@ export const preparePairingRegistration = Effect.fn(
       label: descriptor.label,
       httpBaseUrl: target.httpBaseUrl,
       wsBaseUrl: target.wsBaseUrl,
+      ...(input.boatVm === undefined ? {} : { boatVm: input.boatVm }),
+      ...(input.boatProxy === undefined
+        ? {}
+        : {
+            boatProxy: {
+              sandboxId: input.boatProxy.sandboxId,
+              ...(input.boatProxy.tailnetHttpBaseUrl === undefined
+                ? {}
+                : { tailnetHttpBaseUrl: input.boatProxy.tailnetHttpBaseUrl }),
+            },
+          }),
     }),
     credential: new BearerConnectionCredential({
       token: access.access_token,
+      ...(input.boatProxy === undefined ? {} : { proxyToken: input.boatProxy.token }),
     }),
   });
 });
@@ -242,6 +333,11 @@ export const prepareBearerConnectionUpdate = Effect.fn(
       label,
       httpBaseUrl,
       wsBaseUrl: deriveWsBaseUrl(httpBaseUrl),
+      ...(entry.profile.value.boatVm === undefined ? {} : { boatVm: entry.profile.value.boatVm }),
+      ...(entry.profile.value.boatProxy !== undefined &&
+      boatProxySandboxId(httpBaseUrl) === entry.profile.value.boatProxy.sandboxId
+        ? { boatProxy: entry.profile.value.boatProxy }
+        : {}),
     }),
     credential: credential.value,
   });
@@ -286,13 +382,143 @@ const registerSshConnection = Effect.fn(
   return registration.target.environmentId;
 });
 
+export const prepareSandboxRegistration = Effect.fn(
+  "clientRuntime.connection.onboarding.prepareSandboxRegistration",
+)(function* (input: SandboxConnectionInput) {
+  const gateway = yield* Effect.serviceOption(ClientCapabilities.SandboxEnvironmentGateway);
+  if (Option.isNone(gateway)) {
+    return yield* sandboxUnavailableError();
+  }
+  const bootstrap = yield* gateway.value.provision({
+    target: input.target,
+    idempotencyKey: input.idempotencyKey,
+  });
+  // The sandbox exists, and bills, from here on, but no saved row can stop or
+  // delete it until it is registered. Its pairing token stays unspent: the
+  // first connect redeems it instead of preparing the sandbox again.
+  const descriptor = yield* describeSandboxEnvironment({ bootstrap }).pipe(
+    Effect.mapError((error) => withKeptSandboxDetail(error, bootstrap.sandbox)),
+  );
+  const connectionId = sandboxConnectionId(descriptor.environmentId, bootstrap.sandbox);
+  const label =
+    input.label?.trim() ||
+    bootstrap.target.label.trim() ||
+    `${sandboxProviderLabel(bootstrap.sandbox.providerId)} sandbox`;
+
+  return new SandboxConnectionRegistration({
+    target: new SandboxConnectionTarget({
+      environmentId: descriptor.environmentId,
+      label,
+      connectionId,
+    }),
+    profile: new SandboxConnectionProfile({
+      connectionId,
+      environmentId: descriptor.environmentId,
+      label,
+      target: bootstrap.target,
+      sandbox: bootstrap.sandbox,
+      providerUrl: bootstrap.providerUrl,
+    }),
+  });
+});
+
+const registerSandboxConnection = Effect.fn(
+  "clientRuntime.connection.onboarding.registerSandboxConnection",
+)(function* (input: SandboxConnectionInput) {
+  const registration = yield* prepareSandboxRegistration(input);
+  const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+  yield* registry.register(registration);
+  return registration.target.environmentId;
+});
+
+const isSandboxProfile = Schema.is(SandboxConnectionProfile);
+
+/** The saved sandbox behind an environment, or a blocked error when it has none. */
+const savedSandboxProfile = Effect.fn("clientRuntime.connection.onboarding.savedSandboxProfile")(
+  function* (environmentId: EnvironmentId) {
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    const entry = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
+    if (entry === undefined) {
+      return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({ environmentId });
+    }
+    for (const route of connectionRoutes(entry)) {
+      const profile = Option.getOrNull(route.profile);
+      if (profile !== null && isSandboxProfile(profile)) {
+        return { entry, profile };
+      }
+    }
+    return yield* new ConnectionBlockedError({
+      reason: "configuration",
+      detail: `${entry.target.label} is not a cloud sandbox environment.`,
+    });
+  },
+);
+
+const requireSandboxGateway = Effect.serviceOption(
+  ClientCapabilities.SandboxEnvironmentGateway,
+).pipe(
+  Effect.flatMap(
+    Option.match({
+      onNone: () => Effect.fail(sandboxUnavailableError()),
+      onSome: Effect.succeed,
+    }),
+  ),
+);
+
+const resumeSandboxEnvironment = Effect.fn("clientRuntime.connection.onboarding.resumeSandbox")(
+  function* (environmentId: EnvironmentId) {
+    const { entry, profile } = yield* savedSandboxProfile(environmentId);
+    const gateway = yield* requireSandboxGateway;
+    yield* gateway.resume({ target: profile.target, sandbox: profile.sandbox });
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    if (entry.enabled) {
+      yield* registry.retryNow(environmentId);
+    } else {
+      yield* registry.setEnabled(environmentId, true);
+    }
+  },
+);
+
+const stopSandboxEnvironment = Effect.fn("clientRuntime.connection.onboarding.stopSandbox")(
+  function* (environmentId: EnvironmentId) {
+    const { profile } = yield* savedSandboxProfile(environmentId);
+    const gateway = yield* requireSandboxGateway;
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    yield* registry.setEnabled(environmentId, false);
+    yield* gateway.stop(profile.sandbox);
+  },
+);
+
+const destroySandboxEnvironment = Effect.fn("clientRuntime.connection.onboarding.destroySandbox")(
+  function* (environmentId: EnvironmentId) {
+    const { profile } = yield* savedSandboxProfile(environmentId);
+    const gateway = yield* requireSandboxGateway;
+    yield* gateway.destroy(profile.sandbox);
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    yield* registry.remove(environmentId);
+  },
+);
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
   const presentation = yield* ClientCapabilities.ClientPresentation;
   const httpClient = yield* HttpClient.HttpClient;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
+  const sandbox = yield* Effect.serviceOption(ClientCapabilities.SandboxEnvironmentGateway);
   const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
+  // The sandbox gateway is read with `serviceOption`, so a client without
+  // one (mobile, a browser tab) still builds this service.
+  const withSandbox = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+    const provided = Effect.provideService(
+      effect,
+      EnvironmentRegistry.EnvironmentRegistry,
+      registry,
+    );
+    return Option.isSome(sandbox)
+      ? Effect.provideService(provided, ClientCapabilities.SandboxEnvironmentGateway, sandbox.value)
+      : provided;
+  };
 
   return ConnectionOnboarding.of({
     registerPairing: (input) =>
@@ -311,6 +537,14 @@ export const make = Effect.gen(function* () {
         Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, registry),
         Effect.provideService(ConnectionCredentialStore.ConnectionCredentialStore, credentials),
       ),
+    registerSandbox: (input) =>
+      withSandbox(registerSandboxConnection(input)).pipe(
+        Effect.provideService(ClientCapabilities.ClientPresentation, presentation),
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+      ),
+    resumeSandbox: (environmentId) => withSandbox(resumeSandboxEnvironment(environmentId)),
+    stopSandbox: (environmentId) => withSandbox(stopSandboxEnvironment(environmentId)),
+    destroySandbox: (environmentId) => withSandbox(destroySandboxEnvironment(environmentId)),
   });
 });
 

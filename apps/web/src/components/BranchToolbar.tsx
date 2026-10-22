@@ -362,14 +362,21 @@ const RunContextSelector = memo(function RunContextSelector({
                   <MenuRadioItem
                     key={env.environmentId}
                     disabled={
-                      envLocked || (!onEnvironmentChange && env.environmentId !== environmentId)
+                      envLocked ||
+                      (!onEnvironmentChange && env.environmentId !== environmentId) ||
+                      env.disabledReason !== undefined
                     }
                     value={env.environmentId}
                     closeOnClick
                   >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <EnvironmentMachineIcon kind={env.machine} className="size-3" />
-                      <span className="min-w-0 truncate">{env.label}</span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <EnvironmentMachineIcon kind={env.machine} className="size-3" />
+                        <span className="min-w-0 truncate">{env.label}</span>
+                      </span>
+                      {env.disabledReason !== undefined ? (
+                        <span className="text-muted-foreground text-xs">{env.disabledReason}</span>
+                      ) : null}
                     </span>
                   </MenuRadioItem>
                 ))}

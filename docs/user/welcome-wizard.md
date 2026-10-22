@@ -12,6 +12,28 @@ Close setup while no import is running to go straight to the app. You can connec
 computers and agents later from Settings, or open `/welcome` to run setup again.
 Direct links, such as Settings, open normally before setup is done.
 
+## Copy data from the official app
+
+This build keeps its data in `~/.t3-boat`, apart from the official T3 Code app
+in `~/.t3`, so the two never share threads, settings or identity. Set
+`T3CODE_HOME` or pass `--base-dir` to use another folder.
+
+When the desktop app finds the official app's data on first run, setup starts
+with **Copy data**. Choose what to copy:
+
+- **Projects and threads**: your projects and their stopped threads. Archived
+  threads, running work and scheduled tasks are left behind.
+- **Settings and keybindings**.
+- **Provider logins and secrets**: only the keys your settings use.
+
+This computer's identity and T3 Connect link are never copied, so the two apps
+do not claim to be the same computer. Select **Copy and restart**; the app
+restarts, copies the data before it opens it, and continues setup. Project
+import is skipped after a copy. Select **Skip** to start empty.
+
+From a terminal, `t3 import-home --projects --settings --secrets` does the
+same copy while T3 Code is not running. `--from` picks another source folder.
+
 ## Connect your computers
 
 Select one or more computers to set up. If you opened T3 Code directly from a
@@ -56,6 +78,13 @@ Settings.
 The setup terminal uses the home directory and environment configured for the
 selected provider instance. Sensitive values remain redacted in Settings and
 terminal metadata while the terminal process can use them.
+
+## Boat VMs
+
+When the computer supports Boat VMs, setup offers an optional **Boat** step to
+save a boat API key. Once the key is saved, choose the base snapshot and boat
+environment from your boat account, whether VMs join Tailscale, and how to
+reach the VM. Skip it to set this up later in **Settings → Sandbox jobs**.
 
 ## Import your projects
 

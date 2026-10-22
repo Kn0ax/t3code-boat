@@ -10,6 +10,7 @@ import {
   useClientSettingsHydrationStatus,
 } from "../../hooks/useSettings";
 import { completeOnboarding } from "../../onboarding/firstRun";
+import { useT3DataImport } from "../../onboarding/t3DataImport";
 import {
   isFirstRunWorkspaceProvenanceAuthoritative,
   isFreshFirstRunWorkspace,
@@ -91,6 +92,7 @@ export function FirstRunGate({
   const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
   const primaryShellLive = useAtomValue(primaryShellLiveAtom);
   const workspaceEvidenceLive = useAtomValue(workspaceEvidenceLiveAtom);
+  const dataImport = useT3DataImport();
   const [gateState, setGateState] = useState<FirstRunGateState>(() => ({
     decision:
       (!enabled && !hostedStatic) || (hydrated && onboardingCompletedAt !== null)
@@ -137,6 +139,7 @@ export function FirstRunGate({
         workspaceFresh,
         projectCount: projects.length,
         threadCount,
+        importedData: dataImport === undefined ? "pending" : dataImport?.imported === true,
       });
 
   if (hydrated) {
