@@ -401,9 +401,11 @@ export function useThreadActions() {
   };
 
   const deleteThread = async (
-    target: ScopedThreadRef,
+    requested: ScopedThreadRef,
     opts: { deletedThreadKeys?: ReadonlySet<string> } = {},
   ) => {
+    // Deleting a stopped boat VM's thread deletes its copy, which asks the VM to go.
+    const target = readBoatVmCopyTarget(requested);
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
     const resolved = resolveThreadTarget(target);

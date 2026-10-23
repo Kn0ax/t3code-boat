@@ -155,7 +155,9 @@ points at the VM's thread: choose **Open on VM** in its composer to continue
 there. A stopped VM is started first, and a VM this device has not paired yet
 is paired. When this device lists the VM's own thread and can reach the VM, the
 copy is left out of the sidebar; while the VM is stopped, the copy shows
-instead. Settling or archiving the copy counts as settling the VM's thread. Once
+instead. Settling or archiving the copy counts as settling the VM's thread, and
+deleting it counts as deleting the VM's thread: when nothing else on the VM is
+still open or running, the VM is deleted right away. Once
 the VM is deleted, the copy becomes your own thread and you can send messages in
 it.
 

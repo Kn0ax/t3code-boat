@@ -2233,6 +2233,100 @@ describe("boat VM lifecycle", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("deletes a VM at once when a copy is deleted here and nothing else is at work", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2")], archived: [] }],
+    ]);
+    const copies = new Map<string, ThreadImportService.CopyState | "deleted">();
+    const fetched: Array<string> = [];
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      fetched,
+      vms: [running("vm1")],
+      copyState: (originKey) => Effect.succeed(copies.get(originKey) ?? null),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      copies.set("boat-vm:vm1:t1", "deleted");
+      contents.set("vm1", {
+        threads: [
+          vmThread("t1", { version: "v2" }),
+          vmThread("t2", { settled: true, settledAt: minutesAgo(1) }),
+        ],
+        archived: [],
+      });
+      yield* pass;
+      // No stop and no grace period, and the deleted thread is not synced again.
+      assert.deepEqual(record.events.slice(2), ["destroy:vm1"]);
+      assert.deepEqual(fetched, ["t1", "t2"]);
+      assert.deepEqual(logouts(record), ["vm1"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps a VM whose copy was deleted while other work goes on", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2")], archived: [] }],
+    ]);
+    const copies = new Map<string, ThreadImportService.CopyState | "deleted">();
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      copyState: (originKey) => Effect.succeed(copies.get(originKey) ?? null),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      copies.set("boat-vm:vm1:t1", "deleted");
+      copies.set("boat-vm:vm1:t2", { doneAtMs: null, reopenedAtMs: null });
+      contents.set("vm1", {
+        threads: [vmThread("t1"), vmThread("t2", { status: "running" })],
+        archived: [],
+      });
+      yield* pass;
+      assert.deepEqual(record.events.slice(2), []);
+
+      // Once t2 settles, the usual rule applies and t1 no longer counts.
+      contents.set("vm1", {
+        threads: [vmThread("t1"), vmThread("t2", { settled: true, settledAt: minutesAgo(1) })],
+        archived: [],
+      });
+      yield* pass;
+      assert.deepEqual(record.events.slice(2), ["settle:boat-vm:vm1:t2", "stop:vm1"]);
+      assert.deepEqual(record.destroyed, []);
+      assert.deepEqual([...record.followed], ["import:boat-vm:vm1:t2"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("deletes a stopped VM without reaching it once its only copy is deleted here", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const copies = new Map<string, ThreadImportService.CopyState | "deleted">();
+    const vms: Array<SandboxInfo> = [running("vm1")];
+    const execs: Array<string> = [];
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms,
+      execs,
+      copyState: (originKey) => Effect.succeed(copies.get(originKey) ?? null),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      vms[0] = { ...running("vm1"), status: "stopped" };
+      copies.set("boat-vm:vm1:t1", { doneAtMs: null, reopenedAtMs: null });
+      yield* pass;
+      assert.deepEqual(record.destroyed, []);
+
+      copies.set("boat-vm:vm1:t1", "deleted");
+      yield* pass;
+      assert.deepEqual(record.destroyed, ["vm1"]);
+      assert.deepEqual(execs, ["vm1"]);
+      assert.deepEqual(logouts(record), []);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("checks a copy left alone by an earlier start once more", () => {
     const baseDir = NodePath.join(scratch, "t3-home-left-alone");
     const contents = new Map<string, VmContents>([

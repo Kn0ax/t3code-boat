@@ -15,9 +15,14 @@
  * ordinary threads.
  *
  * A VM holds the threads of one repository, so a rule applies once it holds
- * for every top-level thread on the VM, and while no subagent is at work:
+ * for every top-level thread on the VM, and while no subagent is at work. A
+ * thread whose copy someone deleted here counts as deleted once no run on it
+ * is in flight, and is no longer synced:
  *
  * - every thread deleted: delete the VM;
+ * - a copy just deleted here while every other thread is archived or settled
+ *   and none is at work: delete the VM now, once every other copy is up to date.
+ *   A copy deleted while other work was going on only stops counting;
  * - every thread archived, settled or deleted: once every copy is up to date,
  *   settle the copies and stop the VM, then delete it once it has stayed that
  *   way for BOAT_VM_SETTLED_DELETE_AFTER_MS. A thread counts as settled when
@@ -477,11 +482,28 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     return problems;
   });
 
-  /** The state of a VM thread's followed copy; null for none, or one left alone here. */
-  const copyStateOf = (sandboxId: string, threadId: string) =>
-    typeof mirrorsByVm.get(sandboxId)?.get(threadId) === "string"
-      ? threadImport.copyState(boatVmThreadOriginKey(sandboxId, threadId))
-      : Effect.succeed(null);
+  /**
+   * The state of a VM thread's followed copy: "deleted" once someone deleted
+   * it here, null for none, or for one left alone here, whose state is its own.
+   */
+  const copyStateOf = (sandboxId: string, threadId: string) => {
+    const version = mirrorsByVm.get(sandboxId)?.get(threadId);
+    if (version === undefined) return Effect.succeed(null);
+    return threadImport
+      .copyState(boatVmThreadOriginKey(sandboxId, threadId))
+      .pipe(Effect.map((copy) => (copy === "deleted" || version !== null ? copy : null)));
+  };
+
+  /**
+   * Of threads whose copy someone deleted here, whether one was still followed,
+   * so this pass is the first to see that delete.
+   */
+  const deletedJustNow = (sandboxId: string, threadIds: ReadonlyArray<string>) =>
+    threadIds.some((threadId) => typeof mirrorsByVm.get(sandboxId)?.get(threadId) === "string");
+  /** Leaves deleted copies alone, so their delete asks for the VM to go only once. */
+  const leaveAlone = (sandboxId: string, threadIds: ReadonlyArray<string>) => {
+    for (const threadId of threadIds) mirrorsByVm.get(sandboxId)?.set(threadId, null);
+  };
 
   const stop = Effect.fn("BoatVmLifecycle.stop")(function* (
     provider: SandboxProviderShape,
@@ -570,25 +592,45 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       ...unknown,
     ]);
 
+    // A thread whose copy someone deleted here is not synced again, and counts
+    // as deleted once no run on it is in flight.
+    const copyDeleted = new Set<string>();
+    for (const { id } of [...threads, ...archived]) {
+      if ((yield* copyStateOf(sandboxId, id)) === "deleted") copyDeleted.add(id);
+    }
+    const deletedHere = [
+      ...threads.filter(({ id, status }) => copyDeleted.has(id) && !BUSY_STATUSES.has(status)),
+      ...archived.filter(({ id }) => copyDeleted.has(id)),
+    ].map(({ id }) => id);
+
     // Also the final sync before a stop or delete, which follow in this pass.
     const problems = yield* mirror(
       provider,
       ref,
-      [...threads, ...archived.map(({ id, version }) => ({ id, version: version ?? "" }))],
+      [...threads, ...archived.map(({ id, version }) => ({ id, version: version ?? "" }))].filter(
+        ({ id }) => !copyDeleted.has(id),
+      ),
       [...deleted, ...subagentCopies],
       projects,
     );
 
     const settledThreads: Array<VmThread> = [];
     for (const thread of threads) {
+      if (deletedHere.includes(thread.id)) continue;
       const copy = yield* copyStateOf(sandboxId, thread.id);
-      settledThreads.push({ ...thread, settled: vmThreadSettled(thread, copy) });
+      settledThreads.push({
+        ...thread,
+        settled: vmThreadSettled(thread, copy === "deleted" ? null : copy),
+      });
     }
+    const liveArchived = archived.filter(({ id }) => !deletedHere.includes(id));
+    // Deleting a copy here asks for the VM to go when nothing else is at work on it.
+    const copyJustDeleted = deletedJustNow(sandboxId, deletedHere);
     const nowMs = yield* Clock.currentTimeMillis;
     const action = decide({
       threads: settledThreads,
       subagents,
-      archived: archived.map(({ id }) => id),
+      archived: liveArchived.map(({ id }) => id),
       unknown,
       hadThreads: asked.length > 0,
       nowMs,
@@ -597,27 +639,37 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     });
     const allSettled =
       unknown.length === 0 &&
-      settledThreads.length + archived.length > 0 &&
+      settledThreads.length + liveArchived.length > 0 &&
       settledThreads.every((thread) => thread.settled);
     if (!allSettled) settledSince.delete(sandboxId);
 
     if (action === "none") {
+      leaveAlone(sandboxId, deletedHere);
       if (problems.length > 0) {
         yield* Effect.logDebug("boat.vm.lifecycle.mirrorBehind", { sandboxId, problems });
       }
       return "kept" satisfies LifecycleOutcome;
     }
     if (action === "stop") {
+      leaveAlone(sandboxId, deletedHere);
       if (problems.length > 0) {
         yield* Effect.logWarning("boat.vm.lifecycle.stoppingBehind", { sandboxId, problems });
       }
       return yield* stop(provider, ref);
     }
+    // A delete waits until every other copy is current, so a deleted copy
+    // still asks for it on the next pass.
     if (problems.length > 0) {
       yield* Effect.logWarning("boat.vm.lifecycle.kept", { sandboxId, problems });
       return "kept" satisfies LifecycleOutcome;
     }
-    if (action === "delete") return yield* remove(provider, ref, { running: true });
+    if (
+      action === "delete" ||
+      (copyJustDeleted && settledThreads.every(({ status }) => !BUSY_STATUSES.has(status)))
+    ) {
+      return yield* remove(provider, ref, { running: true });
+    }
+    leaveAlone(sandboxId, deletedHere);
 
     const since = settledSince.get(sandboxId) ?? nowMs;
     if (nowMs - since >= BOAT_VM_SETTLED_DELETE_AFTER_MS) {
@@ -625,9 +677,12 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     }
     // While the VM is stopped only its copies can change, so they must say
     // settled too; a copy someone reopens then keeps the VM.
-    for (const threadId of [...threads.map(({ id }) => id), ...archived.map(({ id }) => id)]) {
+    for (const threadId of [
+      ...settledThreads.map(({ id }) => id),
+      ...liveArchived.map(({ id }) => id),
+    ]) {
       const copy = yield* copyStateOf(sandboxId, threadId);
-      if (copy === null || copy.doneAtMs !== null) continue;
+      if (copy === null || copy === "deleted" || copy.doneAtMs !== null) continue;
       const settled = yield* Effect.result(
         threadImport.settleCopy(boatVmThreadOriginKey(sandboxId, threadId), since),
       );
@@ -647,7 +702,9 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
   /**
    * Deletes a stopped VM once its copies stayed settled for the grace period;
    * a reopened copy keeps it. A VM stopped for being idle starts that period
-   * once every thread it holds has a copy settled here.
+   * once every thread it holds has a copy settled here. A thread whose copy
+   * was deleted here counts as deleted, and that delete removes the VM at once
+   * when every other copy is settled.
    */
   const applyStopped = Effect.fn("BoatVmLifecycle.applyStopped")(function* (
     provider: SandboxProviderShape,
@@ -656,18 +713,33 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     const sandboxId = ref.sandboxId;
     const since = settledSince.get(sandboxId);
     const known = threadsByVm.get(sandboxId) ?? [];
-    let everyCopySettled = known.length > 0;
+    const deletedHere: Array<string> = [];
+    const copies: Array<ThreadImportService.CopyState | null> = [];
+    let reopened: string | undefined;
     for (const threadId of known) {
       const copy = yield* copyStateOf(sandboxId, threadId);
-      if (copy === null) {
-        everyCopySettled = false;
-      } else if (copy.doneAtMs === null) {
-        if (since !== undefined) {
-          settledSince.delete(sandboxId);
-          yield* Effect.logInfo("boat.vm.lifecycle.reopened", { sandboxId, threadId });
-        }
-        return "kept" satisfies LifecycleOutcome;
+      if (copy === "deleted") {
+        deletedHere.push(threadId);
+        continue;
       }
+      copies.push(copy);
+      if (copy !== null && copy.doneAtMs === null) reopened ??= threadId;
+    }
+    const everyCopySettled = known.length > 0 && copies.every((copy) => copy !== null);
+    if (
+      reopened === undefined &&
+      everyCopySettled &&
+      (copies.length === 0 || deletedJustNow(sandboxId, deletedHere))
+    ) {
+      return yield* remove(provider, ref, { running: false });
+    }
+    leaveAlone(sandboxId, deletedHere);
+    if (reopened !== undefined) {
+      if (since !== undefined) {
+        settledSince.delete(sandboxId);
+        yield* Effect.logInfo("boat.vm.lifecycle.reopened", { sandboxId, threadId: reopened });
+      }
+      return "kept" satisfies LifecycleOutcome;
     }
     const nowMs = yield* Clock.currentTimeMillis;
     if (since === undefined) {

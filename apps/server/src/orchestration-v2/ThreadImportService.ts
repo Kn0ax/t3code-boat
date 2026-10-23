@@ -246,8 +246,11 @@ export class ThreadImportService extends Context.Service<
     readonly deleteCopy: (
       originKey: string,
     ) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
-    /** Whether the copy of `originKey` is settled or archived here; null when there is none. */
-    readonly copyState: (originKey: string) => Effect.Effect<CopyState | null>;
+    /**
+     * Whether the copy of `originKey` is settled or archived here; "deleted" once
+     * someone deleted it, null when there is none.
+     */
+    readonly copyState: (originKey: string) => Effect.Effect<CopyState | "deleted" | null>;
     /**
      * Settles the copy of `originKey`. `episode` keeps the command id apart
      * from an earlier settle of the same copy.
@@ -336,8 +339,9 @@ const make = Effect.gen(function* () {
     const existing = yield* Effect.option(
       orchestrator.getThreadRecords(importedThreadId(originKey), []),
     );
-    if (Option.isNone(existing) || existing.value.thread.deletedAt !== null) return null;
+    if (Option.isNone(existing)) return null;
     const { thread } = existing.value;
+    if (thread.deletedAt !== null) return "deleted" as const;
     const ms = (at: DateTime.Utc | null | undefined) =>
       at == null ? null : DateTime.toEpochMillis(at);
     if (thread.archivedAt !== null) return { doneAtMs: ms(thread.archivedAt), reopenedAtMs: null };

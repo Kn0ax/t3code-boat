@@ -94,9 +94,16 @@ While the VM exists, its copies are followed: the lifecycle publishes their ids 
 from any client, an older one, or an agent would start a context-handoff run here and fork the
 conversation away from the VM. The client turns the copy into a pointer instead (the copy's id
 carries the sandbox and VM thread ids, `boatVmThreadCopyOrigin`). Once boat no longer lists the VM,
-its copies drop out of the set and become ordinary threads. A copy deleted here, or one with a run
-of its own that did not fail, is left alone and never deleted with its VM thread. A send that only
-failed, such as at provider startup, does not make the copy the user's.
+its copies drop out of the set and become ordinary threads. A copy with a run of its own that did
+not fail is left alone and never deleted with its VM thread. A send that only failed, such as at
+provider startup, does not make the copy the user's.
+
+A copy deleted here is never brought back, and its VM thread counts as deleted once no run on it
+is in flight. The first pass that sees the delete (the copy was still followed) deletes the VM
+right away, skipping the stop and grace period, when every other thread is settled or archived and
+nothing else is at work; otherwise it only marks the copy left alone, and the thread just stops
+counting. The lifecycle's own `deleteCopy` cannot set this off: it only runs for a VM thread that
+is already deleted, and drops that thread from the state file in the same step.
 
 A VM whose threads are all settled is stopped, not deleted, and deleted only after
 `BOAT_VM_SETTLED_DELETE_AFTER_MS` in that state (`settledSince` in the state file). A thread counts as

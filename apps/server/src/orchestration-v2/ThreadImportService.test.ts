@@ -374,7 +374,7 @@ it.effect("mirrors a thread: creates the copy, then adds only what is new", () =
       },
     });
     expect(update.outcome).toBe("updated");
-    expect((yield* importer.copyState(originKey))?.doneAtMs).not.toBeNull();
+    expect(yield* importer.copyState(originKey)).toMatchObject({ doneAtMs: expect.any(Number) });
 
     const eventSink = Context.get(services, EventSinkV2);
     // A send here that only failed leaves it a copy, still mirrored.
@@ -435,6 +435,7 @@ it.effect("deletes a mirrored copy and never brings it back", () =>
     yield* importer.deleteCopy(input.originKey);
 
     expect((yield* orchestrator.getThreadRecords(threadId, [])).thread.deletedAt).not.toBeNull();
+    expect(yield* importer.copyState(input.originKey)).toBe("deleted");
     expect((yield* importer.mirrorThread(input)).outcome).toBe("deleted");
   }),
 );
