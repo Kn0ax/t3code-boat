@@ -29,10 +29,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { projectShellForRemote } from "../project/repositoryRemote.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { projectThreadProjectionForWire } from "./WireProjection.ts";
 
 /** Item types whose content stands on its own, without the other environment's runs or files. */
 const COPIED_ITEM_TYPES: ReadonlySet<string> = new Set([
@@ -209,10 +211,13 @@ export interface CopyState {
 
 export class ThreadImportProjectNotFoundError extends Schema.TaggedError<ThreadImportProjectNotFoundError>()(
   "ThreadImportProjectNotFoundError",
+  /** Empty for an import into Scratch, which this environment does not have. */
   { repositoryRemoteUrl: Schema.String },
 ) {
   override get message(): string {
-    return `No project here is a checkout of ${this.repositoryRemoteUrl}.`;
+    return this.repositoryRemoteUrl === ""
+      ? "This environment has no Scratch project for the thread."
+      : `No project here is a checkout of ${this.repositoryRemoteUrl}.`;
   }
 }
 
@@ -259,6 +264,14 @@ export class ThreadImportService extends Context.Service<
       originKey: string,
       episode: number,
     ) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
+    /**
+     * The copy of `originKey` as another environment's import takes it, and
+     * whether it was continued here; null when there is no copy or it was deleted.
+     */
+    readonly copySnapshot: (originKey: string) => Effect.Effect<{
+      readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
+      readonly continuedHere: boolean;
+    } | null>;
   }
 >()("t3/orchestration-v2/ThreadImportService") {}
 
@@ -266,25 +279,40 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const eventSink = yield* EventSink.EventSinkV2;
+  // Provided where an import may land in Scratch; without it such an import is refused.
+  const managedFolders = yield* Effect.serviceOption(ManagedProjectFolders.ManagedProjectFolders);
+
+  const projectForImport = Effect.fn("ThreadImportService.projectForImport")(function* (
+    repositoryRemoteUrl: string | undefined,
+  ) {
+    if (repositoryRemoteUrl === undefined) {
+      if (Option.isNone(managedFolders)) {
+        return yield* new ThreadImportProjectNotFoundError({ repositoryRemoteUrl: "" });
+      }
+      return (yield* managedFolders.value.ensureScratchProject.pipe(
+        Effect.mapError(() => new ThreadImportProjectNotFoundError({ repositoryRemoteUrl: "" })),
+      )).projectId;
+    }
+    const project = projectShellForRemote(yield* projects.listShells(), repositoryRemoteUrl);
+    if (project === undefined) {
+      return yield* new ThreadImportProjectNotFoundError({ repositoryRemoteUrl });
+    }
+    return project.id;
+  });
 
   const importThread: ThreadImportService["Service"]["importThread"] = Effect.fn(
     "ThreadImportService.importThread",
   )(function* (input) {
-    const project = projectShellForRemote(yield* projects.listShells(), input.repositoryRemoteUrl);
-    if (project === undefined) {
-      return yield* new ThreadImportProjectNotFoundError({
-        repositoryRemoteUrl: input.repositoryRemoteUrl,
-      });
-    }
+    const projectId = yield* projectForImport(input.repositoryRemoteUrl);
     const threadId = importedThreadId(input.originKey);
     const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
     if (Option.isSome(existing)) {
       return { threadId, projectId: existing.value.thread.projectId, created: false };
     }
     yield* eventSink.write({
-      events: importedThreadEvents({ threadId, projectId: project.id, snapshot: input.snapshot }),
+      events: importedThreadEvents({ threadId, projectId, snapshot: input.snapshot }),
     });
-    return { threadId, projectId: project.id, created: true };
+    return { threadId, projectId, created: true };
   });
 
   const readCopy = (threadId: ThreadId) =>
@@ -362,12 +390,30 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const copySnapshot: ThreadImportService["Service"]["copySnapshot"] = Effect.fn(
+    "ThreadImportService.copySnapshot",
+  )(function* (originKey) {
+    const threadId = importedThreadId(originKey);
+    const copy = yield* readCopy(threadId);
+    if (Option.isNone(copy) || copy.value.thread.deletedAt !== null) return null;
+    const snapshot = yield* Effect.option(orchestrator.getThreadSnapshot(threadId));
+    if (Option.isNone(snapshot)) return null;
+    return {
+      snapshot: {
+        snapshotSequence: snapshot.value.snapshotSequence,
+        projection: projectThreadProjectionForWire(snapshot.value.projection),
+      },
+      continuedHere: continuedHere(copy.value),
+    };
+  });
+
   return ThreadImportService.of({
     importThread,
     mirrorThread,
     deleteCopy,
     copyState,
     settleCopy,
+    copySnapshot,
   });
 });
 

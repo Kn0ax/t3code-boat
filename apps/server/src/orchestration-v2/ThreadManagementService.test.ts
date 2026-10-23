@@ -189,6 +189,78 @@ it.effect("refuses a message to a copy that still follows its source, and takes 
   }).pipe(Effect.provide(layerTest));
 });
 
+it.effect(
+  "refuses a message to a boat VM copy whose VM is gone unless it was continued here",
+  () => {
+    const threadId = ThreadId.make("import:boat-vm:gone:vm-thread");
+    const dispatched: Array<string> = [];
+    let runs: ReadonlyArray<{ readonly status: string }> = [{ status: "failed" }];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadRecords: () =>
+            Effect.sync(
+              () =>
+                ({
+                  thread: {
+                    id: threadId,
+                    projectId: ProjectId.make("project:thread-management:copy"),
+                    deletedAt: null,
+                    modelSelection: {
+                      instanceId: ProviderInstanceId.make("codex_work"),
+                      model: "x",
+                    },
+                  },
+                  runs,
+                }) as unknown as OrchestrationV2ThreadProjection,
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatched.push(command.type);
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+        }),
+      ),
+      Layer.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
+          },
+        }),
+      ),
+      Layer.provideMerge(layerReceiptsTest),
+    );
+    const send = (id: string) =>
+      ThreadManagementService.ThreadManagementService.use((threads) =>
+        threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:thread-management:gone-${id}`),
+          threadId,
+          messageId: MessageId.make(`message:thread-management:gone-${id}`),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        }),
+      );
+
+    return Effect.gen(function* () {
+      // A send that only failed does not make the copy the user's.
+      const error = yield* Effect.flip(send("copy"));
+      expect(error).toMatchObject({
+        cause: expect.stringContaining("Continue it on a new boat VM"),
+      });
+      expect(dispatched).toEqual([]);
+
+      runs = [{ status: "completed" }];
+      yield* send("continued");
+      expect(dispatched).toEqual(["message.dispatch"]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
+
 it.effect("uses thread-not-found only after a projection loads outside the project", () => {
   const projectId = ProjectId.make("project:thread-management:requested");
   const otherProjectId = ProjectId.make("project:thread-management:other");

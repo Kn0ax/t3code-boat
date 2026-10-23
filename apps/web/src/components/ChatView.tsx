@@ -3081,7 +3081,18 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onWorktreeSetupWorkLocallyStable = useStableCallback(onWorktreeSetupWorkLocally);
-  const onComposerSendStable = useStableCallback(onSend);
+  const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
+  // A copy whose boat VM was deleted continues on a new VM; only the text goes along.
+  const onComposerSend: typeof onSend = (...args) => {
+    const continueOnNewVm = boatVmCopy.continueOnNewVm;
+    if (continueOnNewVm === null) return onSend(...args);
+    const target = composerDraftTarget;
+    const message = promptRef.current.trim();
+    return continueOnNewVm(message === "" ? null : message).then((continued) => {
+      if (continued) clearComposerDraftContent(target);
+    });
+  };
+  const onComposerSendStable = useStableCallback(onComposerSend);
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,

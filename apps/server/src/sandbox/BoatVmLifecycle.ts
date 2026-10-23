@@ -11,8 +11,10 @@
  *
  * While the VM exists, running or stopped, its copies are followed copies
  * (FollowedThreadCopies): a message sent to one is refused, because the
- * conversation goes on in the VM's thread. Once the VM is gone they become
- * ordinary threads.
+ * conversation goes on in the VM's thread. Once the VM is gone, a copy goes
+ * on in a new VM (BoatVmService); one that was continued here is the user's.
+ * Each stop or delete of a running VM first brings its commits home, since a
+ * stopped VM is deleted later without being reached.
  *
  * A VM holds the threads of one repository, so a rule applies once it holds
  * for every top-level thread on the VM, and while no subagent is at work. A
@@ -311,6 +313,12 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     ref: SandboxRef,
     vm: { readonly running: boolean },
   ) => Effect.Effect<void>;
+  /**
+   * Run on a running VM before it is stopped or deleted, such as bringing its
+   * commits home; failures are its own to report. Done at every stop because
+   * a stopped VM is deleted later without being reached.
+   */
+  readonly beforeRetire: (provider: SandboxProviderShape, ref: SandboxRef) => Effect.Effect<void>;
 }) {
   const { manager, threadImport } = input;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -509,6 +517,7 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     provider: SandboxProviderShape,
     ref: SandboxRef,
   ) {
+    yield* input.beforeRetire(provider, ref);
     // The manager lets `t3 serve` flush its database before the disk is kept.
     const stopped = yield* Effect.result(manager.stop({ provider, ref }));
     if (stopped._tag === "Failure") {
@@ -528,6 +537,7 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     vm: { readonly running: boolean },
   ) {
     const sandboxId = ref.sandboxId;
+    if (vm.running) yield* input.beforeRetire(provider, ref);
     yield* input.beforeDelete(provider, ref, vm);
     const destroyed = yield* Effect.result(manager.destroy({ provider, ref }));
     if (destroyed._tag === "Failure") {

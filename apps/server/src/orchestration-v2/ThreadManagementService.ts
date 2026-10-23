@@ -8,6 +8,7 @@ import type {
   ProjectionRecords,
 } from "./ProjectionStore.ts";
 import {
+  boatVmThreadCopyOrigin,
   type ChatAttachment,
   CommandId,
   MessageId,
@@ -508,7 +509,9 @@ function latestSteerableRun(
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 
 const FOLLOWED_COPY_REJECTION =
-  "This thread is a copy of a thread on a boat VM. Continue it on the VM; the copy becomes yours once the VM is deleted.";
+  "This thread is a copy of a thread on a boat VM. Continue it on the VM.";
+const DELETED_VM_COPY_REJECTION =
+  "This thread is a copy of a thread on a boat VM that was deleted. Continue it on a new boat VM.";
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -648,25 +651,30 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
-  // A run here would fork the conversation away from the thread it copies.
-  const assertNotFollowedCopy = (
-    command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
-  ) =>
-    Option.isNone(followedCopies)
-      ? Effect.void
-      : followedCopies.value.has(command.threadId).pipe(
-          Effect.flatMap((followed) =>
-            followed
-              ? Effect.fail(
-                  new Orchestrator.OrchestratorCommandRejectedError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause: FOLLOWED_COPY_REJECTION,
-                  }),
-                )
-              : Effect.void,
-          ),
-        );
+  // A run here would fork the conversation away from the thread it copies. A
+  // boat VM copy whose VM is gone continues on a new VM instead, unless it
+  // was already continued here (a run that did not fail), which made it the
+  // user's own thread.
+  const assertNotFollowedCopy = Effect.fn("ThreadManagementService.assertNotFollowedCopy")(
+    function* (
+      command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+    ) {
+      const reject = (cause: string) =>
+        new Orchestrator.OrchestratorCommandRejectedError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      if (Option.isSome(followedCopies) && (yield* followedCopies.value.has(command.threadId))) {
+        return yield* reject(FOLLOWED_COPY_REJECTION);
+      }
+      if (boatVmThreadCopyOrigin(command.threadId) === null) return;
+      const { runs } = yield* orchestrator.getThreadRecords(command.threadId, ["runs"]);
+      if (!runs.some((run) => run.status !== "failed")) {
+        return yield* reject(DELETED_VM_COPY_REJECTION);
+      }
+    },
+  );
 
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {

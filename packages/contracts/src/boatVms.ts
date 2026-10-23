@@ -101,6 +101,15 @@ export const BoatVmLaunchInput = Schema.Struct({
   repository: Schema.optionalKey(BoatVmRepository),
   /** Names the launch on the progress stream, so a client can match it before the call returns. */
   launchId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  /**
+   * This environment's copy of a thread whose boat VM was deleted. A new VM
+   * gets the copy's conversation and the old VM's branches brought home here,
+   * and the copy is replaced by the copy of the new VM's thread. The repository
+   * comes from the copy's project, so `sandboxId` and `repository` are ignored.
+   */
+  continueThreadId: Schema.optionalKey(ThreadId),
+  /** With `continueThreadId`: sent to the thread on the new VM once it is there. */
+  message: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120000))),
 });
 export type BoatVmLaunchInput = typeof BoatVmLaunchInput.Type;
 
@@ -193,6 +202,8 @@ export const BoatVmLaunchResult = Schema.Struct({
   workspaceRoot: TrimmedNonEmptyString,
   /** Why the checkout was left as it was, for the user. */
   warning: Schema.optionalKey(TrimmedNonEmptyString),
+  /** With `continueThreadId`: the continued thread in the VM's own T3. */
+  threadId: Schema.optionalKey(ThreadId),
 });
 export type BoatVmLaunchResult = typeof BoatVmLaunchResult.Type;
 
@@ -239,6 +250,27 @@ export const BoatVmThreadLaunchResult = Schema.Struct({
   warning: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type BoatVmThreadLaunchResult = typeof BoatVmThreadLaunchResult.Type;
+
+export const BoatVmThreadContinueInput = Schema.Struct({
+  threadId: ThreadId.annotate({
+    description:
+      "This environment's copy of a thread on a boat VM that was deleted (an import:boat-vm:… thread).",
+  }),
+  message: TrimmedNonEmptyString.check(Schema.isMaxLength(120000)).annotate({
+    description: "Sent to the thread once it runs on the new VM.",
+  }),
+});
+export type BoatVmThreadContinueInput = typeof BoatVmThreadContinueInput.Type;
+
+export const BoatVmThreadContinueResult = Schema.Struct({
+  sandboxId: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** The thread in the new VM's own T3, not this environment. */
+  threadId: ThreadId,
+  /** Why the VM's checkout, or the deleted VM's commits, were left as they were. */
+  warning: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type BoatVmThreadContinueResult = typeof BoatVmThreadContinueResult.Type;
 
 export const BoatVmBringHomeInput = Schema.Struct({
   sandboxId: TrimmedNonEmptyString,

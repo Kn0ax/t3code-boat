@@ -4,6 +4,8 @@ import {
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
   BoatVmSnapshotState,
+  BoatVmThreadContinueInput,
+  BoatVmThreadContinueResult,
   BoatVmThreadLaunchInput,
   BoatVmThreadLaunchResult,
   OrchestratorMcpFailure,
@@ -197,6 +199,21 @@ const BoatVmThreadLaunchTool = Tool.make("boat_vm_thread_launch", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+const BoatVmThreadContinueTool = Tool.make("boat_vm_thread_continue", {
+  description:
+    "Continue a copy of a boat VM thread whose VM was deleted (threadId is the copy's import:boat-vm:… id here) on a new boat VM, since such a copy takes no messages here: creates a VM for the copy's repository (or Scratch), restores the commits the old VM brought home, puts the conversation into the VM's own T3, and sends message there. threadId in the result is the VM's; the copy here is removed and comes back as the copy of the new VM's thread within about 5 minutes. A copy that was continued here is an ordinary thread and is refused. Costs money while the VM runs. On a server linked to a boat manager, it refuses: copies live on the manager.",
+  parameters: BoatVmThreadContinueInput,
+  success: BoatVmThreadContinueResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: boatVmDependencies,
+})
+  .annotate(Tool.Title, "Continue a boat VM thread on a new VM")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
 const BoatVmBringHomeTool = Tool.make("boat_vm_bring_home", {
   description:
     "Fetch the branches of every checkout on a boat VM into this environment's checkout of the same repository, as refs/t3/boat/<sandboxId>/<branch>. Resumes a stopped VM. Nothing is pushed, the local checkout is not touched, and uncommitted files stay on the VM. unmatched lists VM checkouts with no project here. On a server linked to a boat manager, it refuses: run it on the manager, whose checkout it fetches into.",
@@ -239,6 +256,7 @@ export const SandboxToolkit = Toolkit.make(
   SandboxJobReadTool,
   BoatVmListTool,
   BoatVmThreadLaunchTool,
+  BoatVmThreadContinueTool,
   BoatVmBringHomeTool,
   BoatVmSaveSnapshotTool,
 );

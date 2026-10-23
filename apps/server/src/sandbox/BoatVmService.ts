@@ -15,6 +15,8 @@ import {
   BOAT_VM_LABEL_PREFIX,
   BoatVmError,
   boatVmSnapshotName,
+  boatVmThreadCopyOrigin,
+  boatVmThreadOriginKey,
   boatVmTailnetHostname,
   type BoatVmBringHomeInput,
   type BoatVmBringHomeResult,
@@ -34,9 +36,11 @@ import {
   type BoatVmThreadLaunchInput,
   type BoatVmThreadLaunchResult,
   ModelSelection,
+  ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   ORCHESTRATION_PROTOCOL_VERSION,
   type OrchestrationProjectShell,
+  OrchestrationV2ThreadImportInput,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -58,7 +62,7 @@ import {
   type SandboxInfo,
   type SandboxRef,
 } from "@t3tools/sandbox-core";
-import { importBranchesBundle } from "@t3tools/sandbox-handoff";
+import { importBranchesBundle, runGit } from "@t3tools/sandbox-handoff";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -339,21 +343,11 @@ const REMOVE_BUNDLE_SCRIPT = `case "$1" in
 esac
 `;
 
-// Starts a thread in the VM's own T3 over loopback, as an outside MCP client
-// of its /mcp: it spends the launch's one-time pairing code through the MCP
-// OAuth sign-in, finds or registers the project for the checkout (none for
-// Scratch), then calls t3_thread_launch. The request, pairing code included,
-// comes as a file it deletes, since exec arguments land in boat's command
-// history. Prints one JSON line: the thread, or the tool that refused.
-export const VM_THREAD_LAUNCH_SCRIPT = `set -eu
-REQUEST="$HOME/.t3/boat-thread-launch-$1.json"
-trap 'rm -f "$REQUEST"' EXIT
-T3_PORT="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/port" 2>/dev/null || printf ${T3_PORT})"
-export T3_PORT
-node --input-type=module -e '
-const { readFileSync } = await import("node:fs");
-const { createHash, randomBytes } = await import("node:crypto");
-const request = JSON.parse(readFileSync(process.argv[1], "utf8"));
+// The VM's own T3 over loopback, as an outside MCP client of its /mcp: spends
+// `request.pairingCode` through the MCP OAuth sign-in, then defines `call`
+// (throws Refused when a tool refuses) and `projectFor`, the VM's project for
+// `request.workspaceRoot`, registered if needed (undefined for Scratch).
+const VM_MCP_CLIENT_JS = `const { createHash, randomBytes } = await import("node:crypto");
 const base = "http://127.0.0.1:" + process.env.T3_PORT;
 const send = async (path, init) => {
   const response = await fetch(base + path, init);
@@ -429,23 +423,128 @@ const call = async (tool, args) => {
 
 protocol = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t3-code-boat-vm", version: "1" } })).protocolVersion ?? null;
 await rpc("notifications/initialized");
-try {
-let projectId;
-if (request.workspaceRoot !== null) {
+const projectFor = async (request) => {
+  if (request.workspaceRoot === null) return undefined;
+  let projectId;
   for (let cursor = 0; projectId === undefined && cursor !== null; ) {
     const page = await call("t3_project_list", { cursor, limit: 100 });
     projectId = page.projects.find((project) => project.workspaceRoot === request.workspaceRoot)?.id;
     cursor = page.nextCursor;
   }
-  projectId ??= (await call("t3_project_create", { title: request.projectTitle, workspaceRoot: request.workspaceRoot, createWorkspaceRootIfMissing: false })).id;
-}
-const launched = await call("t3_thread_launch", { ...request.thread, ...(projectId === undefined ? { scratch: true } : { projectId }) });
-process.stdout.write(JSON.stringify({ threadId: launched.threadId, projectId: launched.projectId }));
-} catch (error) {
+  return projectId ?? (await call("t3_project_create", { title: request.projectTitle, workspaceRoot: request.workspaceRoot, createWorkspaceRootIfMissing: false })).id;
+};
+const refusal = (error) => {
   if (!(error instanceof Refused)) throw error;
   process.stdout.write(JSON.stringify({ failure: { tool: error.tool, message: error.message } }));
+};`;
+
+// Starts a thread in the VM's own T3 with the launch's one-time pairing code:
+// finds or registers the project for the checkout (none for Scratch), then
+// calls t3_thread_launch. The request, pairing code included, comes as a file
+// it deletes, since exec arguments land in boat's command history. Prints one
+// JSON line: the thread, or the tool that refused.
+export const VM_THREAD_LAUNCH_SCRIPT = `set -eu
+REQUEST="$HOME/.t3/boat-thread-launch-$1.json"
+trap 'rm -f "$REQUEST"' EXIT
+T3_PORT="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/port" 2>/dev/null || printf ${T3_PORT})"
+export T3_PORT
+node --input-type=module -e '
+const { readFileSync } = await import("node:fs");
+const request = JSON.parse(readFileSync(process.argv[1], "utf8"));
+${VM_MCP_CLIENT_JS}
+try {
+  const projectId = await projectFor(request);
+  const launched = await call("t3_thread_launch", { ...request.thread, ...(projectId === undefined ? { scratch: true } : { projectId }) });
+  process.stdout.write(JSON.stringify({ threadId: launched.threadId, projectId: launched.projectId }));
+} catch (error) {
+  refusal(error);
 }
 ' "$REQUEST"
+`;
+
+// Puts a thread copied elsewhere into the VM's own T3, as the thread the
+// conversation continues in, then sends it the request's message, if any.
+// Runs on a VM whose server just started and that no client has reached yet.
+// The VM mints its own pairing code for the MCP sign-in, so the launch's code
+// stays the client's, and a short-lived token for the thread import endpoint,
+// which takes the snapshot shape this server reads its copies in. The import
+// lands in the VM's project for the checkout, registered first, or in its
+// Scratch. Prints one JSON line like VM_THREAD_LAUNCH_SCRIPT.
+export const VM_THREAD_HANDOVER_SCRIPT = `set -eu
+REQUEST="$HOME/.t3/boat-thread-handover-$1.json"
+trap 'rm -f "$REQUEST"' EXIT
+STATE_DIR="$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}"
+[ -x "$STATE_DIR/run-t3.sh" ] || { printf 'No T3 runner on this VM.\\n' >&2; exit 3; }
+T3_PORT="$(cat "$STATE_DIR/port" 2>/dev/null || printf ${T3_PORT})"
+T3_TOKEN="$("$STATE_DIR/run-t3.sh" auth session issue --base-dir "$HOME/.t3" --scope orchestration:operate --ttl 5m --token-only)"
+T3_PAIRING="$("$STATE_DIR/run-t3.sh" auth pairing create --base-dir "$HOME/.t3" --ttl 5m --json |
+  node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{process.stdout.write(JSON.parse(s.slice(s.indexOf("{"))).credential)})')"
+export T3_PORT T3_TOKEN T3_PAIRING
+node --input-type=module -e '
+const { readFileSync } = await import("node:fs");
+const request = { ...JSON.parse(readFileSync(process.argv[1], "utf8")), pairingCode: process.env.T3_PAIRING };
+${VM_MCP_CLIENT_JS}
+try {
+  await projectFor(request);
+  const imported = await fetch(base + "/api/orchestration/threads/import", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + process.env.T3_TOKEN,
+      "content-type": "application/json",
+      "${ORCHESTRATION_PROTOCOL_HEADER}": "${ORCHESTRATION_PROTOCOL_VERSION}",
+    },
+    body: JSON.stringify(request.import),
+  });
+  // A release without the endpoint answers 404, and one that needs a remote 400.
+  if (imported.status === 404) {
+    throw new Refused("thread import", "the VM found no project for the repository, or its T3 release cannot import threads");
+  }
+  if (imported.status === 400) {
+    throw new Refused("thread import", "the VM runs a T3 release that cannot import a No project thread");
+  }
+  if (!imported.ok) throw new Error("/api/orchestration/threads/import answered " + imported.status);
+  const thread = await imported.json();
+  if (request.message !== null) await call("t3_thread_send", { threadId: thread.threadId, message: request.message });
+  process.stdout.write(JSON.stringify({ threadId: thread.threadId, projectId: thread.projectId }));
+} catch (error) {
+  refusal(error);
+}
+' "$REQUEST"
+`;
+
+// Fetches branches brought home from another VM ("$HOME/.t3/boat-restore.bundle",
+// refs under "$2") into the checkout at "$1" under the same refs, creates or
+// fast-forwards the local branch of each, then checks out "$3" when given. A
+// branch that went its own way, or the checked-out one in a dirty tree, is left
+// as it is. Prints one "kept <branch>" line for each branch left as it was, and
+// "dirty" when the checkout was not switched for local changes.
+export const RESTORE_BRANCHES_SCRIPT = `set -eu
+BUNDLE="$HOME/.t3/boat-restore.bundle"
+trap 'rm -f "$BUNDLE"' EXIT
+cd "$1"
+PREFIX="$2"
+git fetch --quiet --no-tags --no-write-fetch-head "$BUNDLE" "+$PREFIX*:$PREFIX*"
+CURRENT="$(git symbolic-ref --quiet --short HEAD || true)"
+CLEAN=1
+[ -z "$(git status --porcelain)" ] || CLEAN=0
+git for-each-ref --format='%(refname)' "$PREFIX" | while read -r REF; do
+  NAME="\${REF#"$PREFIX"}"
+  [ "$NAME" != HEAD ] || continue
+  if ! git rev-parse --verify --quiet "refs/heads/$NAME" >/dev/null; then
+    git branch --quiet --no-track "$NAME" "$REF"
+  elif ! git merge-base --is-ancestor "refs/heads/$NAME" "$REF"; then
+    printf 'kept %s\\n' "$NAME"
+  elif [ "$NAME" != "$CURRENT" ]; then
+    git update-ref "refs/heads/$NAME" "$REF"
+  elif [ "$CLEAN" = 1 ]; then
+    git merge --ff-only --quiet "$REF"
+  else
+    printf 'kept %s\\n' "$NAME"
+  fi
+done
+if [ -n "\${3:-}" ] && [ "$3" != "$CURRENT" ] && git rev-parse --verify --quiet "refs/heads/$3" >/dev/null; then
+  if [ "$CLEAN" = 1 ]; then git checkout --quiet "$3"; else printf 'dirty\\n'; fi
+fi
 `;
 
 // Links the VM's own T3 back to this server as its boat manager, as a user
@@ -522,6 +621,17 @@ const VmThreadLaunchRequest = Schema.Struct({
 const encodeVmThreadLaunchRequest = Schema.encodeEffect(
   Schema.fromJsonString(Schema.toCodecJson(VmThreadLaunchRequest)),
 );
+const VmThreadHandoverRequest = Schema.Struct({
+  /** The VM's checkout, or null for its Scratch. */
+  workspaceRoot: Schema.NullOr(Schema.String),
+  projectTitle: Schema.String,
+  import: OrchestrationV2ThreadImportInput,
+  message: Schema.NullOr(Schema.String),
+});
+const encodeVmThreadHandoverRequest = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.toCodecJson(VmThreadHandoverRequest)),
+);
+/** Same reply as VM_THREAD_LAUNCH_SCRIPT. */
 const decodeVmThreadLaunchReply = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Union([
@@ -545,6 +655,16 @@ const repositoryOf = (
           (identity.rootPath ?? identity.canonicalKey).split(/[/\\]/).findLast(Boolean) ??
           identity.canonicalKey,
       };
+
+/** A copy here whose VM was deleted, continued on the VM a launch makes. */
+interface Continuation {
+  /** The copy's origin key; the thread on the new VM is imported under it. */
+  readonly originKey: string;
+  /** The deleted VM, whose branches its last stop or delete brought home. */
+  readonly fromSandboxId: string;
+  readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
+  readonly message: string | undefined;
+}
 
 const CHECKOUT_DIRECTORY = /^[A-Za-z0-9._-]+$/;
 const BUNDLE_ANSWER = /^(\/\S*\/\.t3-bring-home\.[A-Za-z0-9]+) ([01]) ([01])$/;
@@ -787,10 +907,11 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   const scope = yield* Effect.scope;
   const managerAccess = yield* BoatVmManagerAccess.BoatVmManagerAccess;
   const t3Version = options.t3Version ?? (yield* sandboxT3Release).t3Version;
+  const threadImport = yield* ThreadImportService.ThreadImportService;
   const lifecycle = yield* BoatVmLifecycle.make({
     statePath: path.join((yield* ServerConfig.ServerConfig).stateDir, "boat-vm-threads.json"),
     manager,
-    threadImport: yield* ThreadImportService.ThreadImportService,
+    threadImport,
     followedCopies: yield* FollowedThreadCopies.FollowedThreadCopies,
     homeProjectFor: (remoteUrl) => {
       const scratch = managedFolders.ensureScratchProject.pipe(
@@ -816,6 +937,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             .pipe(Effect.ignore)
         : Effect.void
       ).pipe(Effect.andThen(managerAccess.revoke(ref.sandboxId))),
+    beforeRetire: (provider, ref) => bringHomeBeforeRetire(provider, ref),
   });
 
   /**
@@ -1008,9 +1130,153 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     );
   });
 
+  /**
+   * Puts the branches the deleted VM's last stop or delete brought home into
+   * the new VM's checkout, and checks out the thread's branch. Returns a note
+   * for the user when something stayed behind; never fails the launch, since
+   * the commits are still here.
+   */
+  const restoreBranches = Effect.fn("BoatVmService.restoreBranches")(
+    function* (
+      provider: SandboxProviderShape,
+      ref: SandboxRef,
+      continuation: Continuation,
+      repository: BoatVmRepository,
+      workspaceRoot: string,
+    ) {
+      const shells = yield* projects.listShells();
+      const repositoryRoot = localCheckoutOf(shells, repository.remoteUrl);
+      if (repositoryRoot === undefined) {
+        return `No project here checks out ${repository.name}, so commits from the deleted VM were not restored.`;
+      }
+      const prefix = boatVmRefPrefix(continuation.fromSandboxId);
+      const refs = (yield* runGit({
+        step: "for-each-ref:boat-restore",
+        cwd: repositoryRoot,
+        args: ["for-each-ref", "--format=%(refname)", prefix],
+      })).stdout
+        .split("\n")
+        .filter((line) => line.length > 0);
+      if (refs.length === 0) return undefined;
+      const staging = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-boat-restore-",
+      });
+      const bundle = path.join(staging, "restore.bundle");
+      yield* runGit({
+        step: "bundle:boat-restore",
+        cwd: repositoryRoot,
+        args: ["bundle", "create", "--quiet", bundle, ...refs],
+      });
+      yield* provider.writeFile(
+        ref,
+        "~/.t3/boat-restore.bundle",
+        yield* fileSystem.readFile(bundle),
+      );
+      const branch = continuation.snapshot.projection.thread.branch ?? "";
+      const restored = yield* provider.exec(ref, {
+        script: RESTORE_BRANCHES_SCRIPT,
+        args: [workspaceRoot, prefix, branch],
+        timeoutMs: SCRIPT_TIMEOUT_MS,
+      });
+      if (restored.exitCode !== 0) {
+        yield* Effect.logWarning("boat.vm.restore.failed", {
+          sandboxId: ref.sandboxId,
+          exitCode: restored.exitCode,
+          stderr: restored.stderr.slice(-500),
+        });
+        return `Commits from the deleted VM could not be restored on the new VM. They are in ${repositoryRoot} under ${prefix}.`;
+      }
+      const lines = restored.stdout.split("\n");
+      const kept = lines.flatMap((line) => (line.startsWith("kept ") ? [line.slice(5)] : []));
+      const notes = [
+        ...(kept.length === 0
+          ? []
+          : [
+              `${kept.join(", ")} differ on the new VM, so they were left as they are; the deleted VM's commits are under ${prefix} there.`,
+            ]),
+        ...(lines.includes("dirty")
+          ? [`${branch} was not checked out because the checkout has local changes.`]
+          : []),
+      ];
+      return notes.length === 0 ? undefined : notes.join(" ");
+    },
+    Effect.scoped,
+    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    Effect.provideService(FileSystem.FileSystem, fileSystem),
+    Effect.provideService(Path.Path, path),
+    (effect, _provider, ref) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("boat.vm.restore.failed", {
+            sandboxId: ref.sandboxId,
+            error: error.message,
+          }).pipe(Effect.as("Commits from the deleted VM could not be restored on the new VM.")),
+        ),
+      ),
+  );
+
+  /**
+   * Continues the copied thread on a VM whose server just started: restores
+   * its branches, then puts the conversation into the VM's T3 and sends the
+   * message there. Fails when the VM cannot take the thread.
+   */
+  const handOver = Effect.fn("BoatVmService.handOver")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+    continuation: Continuation,
+    repository: BoatVmRepository | undefined,
+    workspaceRoot: string,
+  ) {
+    const restoreNote =
+      repository === undefined
+        ? undefined
+        : yield* restoreBranches(provider, ref, continuation, repository, workspaceRoot);
+    const failed = () => vmError("The new VM could not take the thread. See the server log.");
+    const requestId = yield* crypto.randomUUIDv4().pipe(Effect.mapError(failed));
+    const request = yield* encodeVmThreadHandoverRequest({
+      workspaceRoot: repository === undefined ? null : workspaceRoot,
+      projectTitle: path.basename(workspaceRoot),
+      import: {
+        originKey: continuation.originKey,
+        ...(repository === undefined ? {} : { repositoryRemoteUrl: repository.remoteUrl }),
+        snapshot: continuation.snapshot,
+      },
+      message: continuation.message ?? null,
+    }).pipe(Effect.mapError(failed));
+    yield* provider.writeFile(
+      ref,
+      `~/.t3/boat-thread-handover-${requestId}.json`,
+      new TextEncoder().encode(request),
+    );
+    const result = yield* provider.exec(ref, {
+      script: VM_THREAD_HANDOVER_SCRIPT,
+      args: [requestId],
+      timeoutMs: SCRIPT_TIMEOUT_MS,
+    });
+    const reply =
+      result.exitCode === 0
+        ? yield* decodeVmThreadLaunchReply(result.stdout.trim()).pipe(Effect.option)
+        : Option.none();
+    if (Option.isNone(reply)) {
+      yield* Effect.logWarning("boat.vm.handover.failed", {
+        sandboxId: ref.sandboxId,
+        exitCode: result.exitCode,
+        stderr: result.stderr.slice(-500),
+      });
+      return yield* failed();
+    }
+    if ("failure" in reply.value) {
+      return yield* vmError(
+        `The new VM could not take the thread: its ${reply.value.failure.tool} refused, ${reply.value.failure.message}.`,
+      );
+    }
+    return { threadId: reply.value.threadId, warning: restoreNote };
+  });
+
   const runLaunch = (
     input: BoatVmLaunchInput,
     report: (progress: Partial<BoatVmLaunches.BoatVmLaunchProgress>) => Effect.Effect<void>,
+    continuation?: Continuation,
   ) => {
     let created: { readonly provider: SandboxProviderShape; readonly ref: SandboxRef } | undefined;
     return Effect.scoped(
@@ -1187,8 +1453,16 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             stderr: sync.stderr.slice(-500),
           });
         }
-        const warning =
+        const syncWarning =
           repository === undefined ? undefined : SYNC_WARNINGS[syncState]?.(repository.name);
+        // Before any client can reach the VM, so the thread is there when one does.
+        const continued =
+          continuation === undefined
+            ? undefined
+            : yield* handOver(baseProvider, bootstrap.ref, continuation, repository, workspaceRoot);
+        const warning =
+          [syncWarning, continued?.warning].filter((note) => note !== undefined).join(" ") ||
+          undefined;
         const proxyToken = useBoatProxy
           ? yield* boatProxy
               .register(bootstrap.ref.sandboxId, {
@@ -1226,6 +1500,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
                 },
               }),
           ...(warning === undefined ? {} : { warning }),
+          ...(continued === undefined ? {} : { threadId: continued.threadId }),
         };
       }),
     ).pipe(
@@ -1250,8 +1525,64 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
 
   const launchTracker = yield* BoatVmLaunches.make(scope);
 
+  /**
+   * What continuing a copy whose VM was deleted takes, read from the copy:
+   * its conversation, and its project's repository, or none for Scratch.
+   */
+  const prepareContinuation = Effect.fn("BoatVmService.prepareContinuation")(function* (
+    copyThreadId: ThreadId,
+    message: string | undefined,
+  ) {
+    const origin = boatVmThreadCopyOrigin(copyThreadId);
+    if (origin === null) return yield* vmError("That thread is not a copy of a boat VM thread.");
+    const originKey = boatVmThreadOriginKey(origin.sandboxId, origin.threadId);
+    const copy = yield* threadImport.copySnapshot(originKey);
+    if (copy === null) return yield* vmError("That copy no longer exists.");
+    if (copy.continuedHere) {
+      return yield* vmError("That thread was continued here, so it is an ordinary thread now.");
+    }
+    const sandboxes = yield* (yield* requireProvider(yield* getSettings))
+      .list()
+      .pipe(Effect.mapError((error) => vmError(error.message)));
+    if (
+      sandboxes.some(
+        (sandbox) => sandbox.ref.sandboxId === origin.sandboxId && sandbox.status !== "destroyed",
+      )
+    ) {
+      return yield* vmError("This thread's boat VM still exists. Continue it there.");
+    }
+    const shells = yield* projects
+      .listShells()
+      .pipe(Effect.mapError(() => vmError("Could not read this environment's projects.")));
+    // The lifecycle copies a thread into the project for its repository, or
+    // into Scratch, so a project without a remote means a Scratch VM.
+    const repository = repositoryOf(
+      shells.find((shell) => shell.id === copy.snapshot.projection.thread.projectId)
+        ?.repositoryIdentity,
+    );
+    const continuation: Continuation = {
+      originKey,
+      fromSandboxId: origin.sandboxId,
+      snapshot: copy.snapshot,
+      message,
+    };
+    return { continuation, repository };
+  }, Effect.scoped);
+
   const launch: BoatVmService["Service"]["launch"] = Effect.fn("BoatVmService.trackLaunch")(
-    function* (input) {
+    function* (requested) {
+      const continuing =
+        requested.continueThreadId === undefined
+          ? undefined
+          : yield* prepareContinuation(requested.continueThreadId, requested.message);
+      const input: BoatVmLaunchInput =
+        continuing === undefined
+          ? requested
+          : {
+              ...(requested.transport === undefined ? {} : { transport: requested.transport }),
+              ...(requested.launchId === undefined ? {} : { launchId: requested.launchId }),
+              ...(continuing.repository === undefined ? {} : { repository: continuing.repository }),
+            };
       const launchId =
         input.launchId ??
         (yield* crypto
@@ -1267,8 +1598,10 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
       if (!began) return yield* vmError("This boat VM launch is already running.");
       // Its own fiber in the service's scope, so only Cancel interrupts the launch: a
       // client that disconnects stops waiting, but the VM still finishes starting.
-      const fiber = yield* runLaunch(input, (progress) =>
-        launchTracker.report(launchId, progress),
+      const fiber = yield* runLaunch(
+        input,
+        (progress) => launchTracker.report(launchId, progress),
+        continuing?.continuation,
       ).pipe(
         Effect.onExit((exit) =>
           Exit.isSuccess(exit)
@@ -1286,7 +1619,21 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
       );
       yield* launchTracker.attach(launchId, fiber);
       const exit = yield* Fiber.await(fiber);
-      if (Exit.isSuccess(exit)) return exit.value;
+      if (Exit.isSuccess(exit)) {
+        // The conversation lives on the new VM now, and comes back as the copy
+        // of its thread there; keeping this one too would show it twice.
+        if (continuing !== undefined) {
+          yield* threadImport.deleteCopy(continuing.continuation.originKey).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("boat.vm.continue.copyDeleteFailed", {
+                sandboxId: exit.value.sandboxId,
+                error: error.message,
+              }),
+            ),
+          );
+        }
+        return exit.value;
+      }
       if (Cause.hasInterruptsOnly(exit.cause)) {
         return yield* vmError("The boat VM launch was cancelled.");
       }
@@ -1441,6 +1788,70 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     return broughtHome;
   });
 
+  /**
+   * Every checkout on a running VM fetched into this environment's checkout of
+   * the same repository; undefined when the VM has no checkout.
+   */
+  const bringCheckoutsHome = Effect.fn("BoatVmService.bringCheckoutsHome")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+  ) {
+    const listed = yield* provider.exec(ref, { script: CHECKOUTS_SCRIPT, timeoutMs: 60_000 });
+    const vmCheckouts = listed.stdout.split("\n").flatMap((line) => {
+      const [directory = "", remoteUrl = ""] = line.split("\t");
+      return CHECKOUT_DIRECTORY.test(directory) && remoteUrl.trim() !== ""
+        ? [{ directory, remoteUrl: remoteUrl.trim() }]
+        : [];
+    });
+    if (vmCheckouts.length === 0) return undefined;
+    const shells = yield* projects
+      .listShells()
+      .pipe(Effect.mapError(() => vmError("Could not read this environment's projects.")));
+
+    const checkouts: Array<BoatVmBroughtHome> = [];
+    const unmatched: Array<string> = [];
+    for (const checkout of vmCheckouts) {
+      const repositoryRoot = localCheckoutOf(shells, checkout.remoteUrl);
+      if (repositoryRoot === undefined) {
+        unmatched.push(checkout.directory);
+        continue;
+      }
+      const broughtHome = yield* bringCheckoutHome(
+        provider,
+        ref,
+        checkout.directory,
+        repositoryRoot,
+      );
+      if (broughtHome !== undefined) checkouts.push(broughtHome);
+    }
+    return { checkouts, unmatched };
+  });
+
+  /**
+   * Brings a running VM's commits home before the lifecycle stops or deletes
+   * it, so a copy continued on a new VM can take its branches along. A stopped
+   * VM is deleted without being reached, so the stop is the last chance.
+   */
+  const bringHomeBeforeRetire = (provider: SandboxProviderShape, ref: SandboxRef) =>
+    Effect.scoped(bringCheckoutsHome(provider, ref)).pipe(
+      Effect.flatMap((fetched) =>
+        fetched === undefined || fetched.checkouts.length + fetched.unmatched.length === 0
+          ? Effect.void
+          : Effect.logInfo("boat.vm.lifecycle.broughtHome", {
+              sandboxId: ref.sandboxId,
+              refs: fetched.checkouts.reduce((count, checkout) => count + checkout.refs.length, 0),
+              unmatched: fetched.unmatched.length,
+            }),
+      ),
+      Effect.catch((error) =>
+        Effect.logWarning("boat.vm.lifecycle.bringHomeFailed", {
+          sandboxId: ref.sandboxId,
+          error: error.message,
+        }),
+      ),
+      Effect.withSpan("BoatVmService.bringHomeBeforeRetire"),
+    );
+
   const bringHome: BoatVmService["Service"]["bringHome"] = (input) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1460,37 +1871,11 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           yield* provider.extendAutoStop?.(ref, settings.boatVmIdleMinutes) ?? Effect.void;
         }
 
-        const listed = yield* provider.exec(ref, { script: CHECKOUTS_SCRIPT, timeoutMs: 60_000 });
-        const vmCheckouts = listed.stdout.split("\n").flatMap((line) => {
-          const [directory = "", remoteUrl = ""] = line.split("\t");
-          return CHECKOUT_DIRECTORY.test(directory) && remoteUrl.trim() !== ""
-            ? [{ directory, remoteUrl: remoteUrl.trim() }]
-            : [];
-        });
-        if (vmCheckouts.length === 0) {
+        const fetched = yield* bringCheckoutsHome(provider, ref);
+        if (fetched === undefined) {
           return yield* vmError("The VM has no repository checkout to bring home.");
         }
-        const shells = yield* projects
-          .listShells()
-          .pipe(Effect.mapError(() => vmError("Could not read this environment's projects.")));
-
-        const checkouts: Array<BoatVmBroughtHome> = [];
-        const unmatched: Array<string> = [];
-        for (const checkout of vmCheckouts) {
-          const repositoryRoot = localCheckoutOf(shells, checkout.remoteUrl);
-          if (repositoryRoot === undefined) {
-            unmatched.push(checkout.directory);
-            continue;
-          }
-          const broughtHome = yield* bringCheckoutHome(
-            provider,
-            ref,
-            checkout.directory,
-            repositoryRoot,
-          );
-          if (broughtHome !== undefined) checkouts.push(broughtHome);
-        }
-
+        const { checkouts, unmatched } = fetched;
         if (checkouts.length === 0) {
           return yield* vmError(
             unmatched.length > 0

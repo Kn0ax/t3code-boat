@@ -3241,8 +3241,11 @@ export type OrchestrationV2ThreadDetailSnapshot = typeof OrchestrationV2ThreadDe
 export const OrchestrationV2ThreadImportInput = Schema.Struct({
   /** Names where the thread came from; importing the same key again returns the earlier copy. */
   originKey: TrimmedNonEmptyString,
-  /** The copy joins this environment's project for the repository at this remote. */
-  repositoryRemoteUrl: TrimmedNonEmptyString,
+  /**
+   * The copy joins this environment's project for the repository at this remote;
+   * omitted, it joins this environment's Scratch ("No project").
+   */
+  repositoryRemoteUrl: Schema.optionalKey(TrimmedNonEmptyString),
   snapshot: OrchestrationV2ThreadDetailSnapshot,
 });
 export type OrchestrationV2ThreadImportInput = typeof OrchestrationV2ThreadImportInput.Type;

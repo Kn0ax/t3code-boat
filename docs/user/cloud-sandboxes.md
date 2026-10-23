@@ -157,9 +157,14 @@ is paired. When this device lists the VM's own thread and can reach the VM, the
 copy is left out of the sidebar; while the VM is stopped, the copy shows
 instead. Settling or archiving the copy counts as settling the VM's thread, and
 deleting it counts as deleting the VM's thread: when nothing else on the VM is
-still open or running, the VM is deleted right away. Once
-the VM is deleted, the copy becomes your own thread and you can send messages in
-it.
+still open or running, the VM is deleted right away.
+
+Once the VM is deleted, choose **Continue on a new VM** in the copy's composer,
+or just send a message: a new VM starts for the same repository (or with no
+project), gets the conversation and the commits brought home from the old VM,
+checks out the thread's branch, and the message runs there. The copy is replaced
+by the new VM's thread. A copy that already ran a message on this server stays
+your own thread there.
 
 On the same check, it acts once every thread on a VM agrees, after copying the
 threads one last time:
@@ -175,8 +180,9 @@ threads one last time:
 - Every thread deleted: the VM is deleted.
 - A VM you just started or resumed is left alone for the minutes you set.
 
-A copy keeps the conversation and tool activity, but not checkpoints or
-uncommitted files. Use **Bring boat VM work home** first for commits you want.
+Before it stops or deletes a running VM, the server brings the VM's commits home
+as with **Bring boat VM work home**. A copy keeps the conversation and tool
+activity, but not checkpoints or uncommitted files.
 
 **Bring boat VM work home** in the command palette fetches the VM's branches
 into the local checkout as `refs/t3/boat/<vm-id>/<branch>`. Nothing is pushed.

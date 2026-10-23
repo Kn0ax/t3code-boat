@@ -2,6 +2,7 @@ import {
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
   BoatVmSnapshotState,
+  type BoatVmThreadContinueResult,
   BoatVmThreadLaunchInput,
   BoatVmThreadLaunchResult,
   OrchestratorMcpFailure,
@@ -194,6 +195,37 @@ const handlers = {
                 Effect.flatMap((projectRepository) => forward({ repository: projectRepository })),
               );
       }).pipe(Effect.catchTags(boatFailures)),
+  ),
+  // Spends money and runs an agent on the VM, like boat_vm_thread_launch.
+  boat_vm_thread_continue: McpToolAccess.writesEnvironment((input) =>
+    Effect.gen(function* () {
+      const manager = yield* Effect.flatMap(
+        BoatManagerLink.BoatManagerLink,
+        (link) => link.manager,
+      );
+      if (Option.isSome(manager)) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `Copies of boat VM threads live on the boat manager: use boat_vm_thread_continue on ${new URL(manager.value).host}.`,
+        });
+      }
+      const launched = yield* Effect.flatMap(boatVms, (vms) =>
+        vms.launch({ continueThreadId: input.threadId, message: input.message }),
+      );
+      if (launched.threadId === undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "sandbox_failed",
+          message: "The new VM did not report the continued thread.",
+        });
+      }
+      const result: BoatVmThreadContinueResult = {
+        sandboxId: launched.sandboxId,
+        label: launched.label,
+        threadId: launched.threadId,
+        ...(launched.warning === undefined ? {} : { warning: launched.warning }),
+      };
+      return result;
+    }).pipe(Effect.catchTags({ BoatVmError: boatFailures.BoatVmError })),
   ),
   // Both write into this environment's repositories or the boat account.
   boat_vm_bring_home: McpToolAccess.writesEnvironment((input) =>

@@ -93,10 +93,34 @@ While the VM exists, its copies are followed: the lifecycle publishes their ids 
 `ThreadManagementService` rejects a `message.dispatch` to one before it commits. Without that, a send
 from any client, an older one, or an agent would start a context-handoff run here and fork the
 conversation away from the VM. The client turns the copy into a pointer instead (the copy's id
-carries the sandbox and VM thread ids, `boatVmThreadCopyOrigin`). Once boat no longer lists the VM,
-its copies drop out of the set and become ordinary threads. A copy with a run of its own that did
-not fail is left alone and never deleted with its VM thread. A send that only failed, such as at
+carries the sandbox and VM thread ids, `boatVmThreadCopyOrigin`). A copy with a run of its own that
+did not fail is left alone and never deleted with its VM thread. A send that only failed, such as at
 provider startup, does not make the copy the user's.
+
+Once boat no longer lists the VM, its copies drop out of the set, but `ThreadManagementService`
+still refuses a send to any `import:boat-vm:` thread without such a run: boat work never runs on
+the manager. The copy continues on a new VM instead, through `boatVms.launch` with
+`continueThreadId` (no new RPC) or `boat_vm_thread_continue`. The server reads the repository from
+the copy's project (no remote means Scratch), launches as usual, and after the sync, before the
+launch returns and any client reaches the VM:
+
+- restores the old VM's branches from `refs/t3/boat/<old id>/` in the manager's checkout, as a
+  bundle the VM fetches, and checks out the thread's branch. They are there because every
+  lifecycle stop or delete of a running VM runs bring home first: a stopped VM is deleted after
+  its grace period without being reached, so its last stop is the last chance. A branch that went
+  its own way on the VM is left as it is, and a missing checkout here is a launch warning.
+- puts the conversation into the VM's T3 through its existing `POST /api/orchestration/threads/import`
+  over loopback, with a token and a pairing code the VM's `t3` mints, then sends the message with
+  `t3_thread_send`. It runs after `t3 serve` starts because no released `t3` can append to a
+  database offline, and a new subcommand would reach VMs only once a newer release is baked into
+  the snapshots. The import endpoint shipped with the boat VM work, so a VM on a release without it
+  fails the launch with that reason; a Scratch copy also needs a release that imports without a
+  remote.
+
+A failed hand-over discards the new VM like any failed launch and keeps the copy. On success the
+copy is deleted: the VM's thread is imported under the copy's origin key, so it is named after the
+copy (`import:boat-vm:<old id>:<thread>`), and its own copy here replaces the old one on the next
+pass.
 
 A copy deleted here is never brought back, and its VM thread counts as deleted once no run on it
 is in flight. The first pass that sees the delete (the copy was still followed) deletes the VM

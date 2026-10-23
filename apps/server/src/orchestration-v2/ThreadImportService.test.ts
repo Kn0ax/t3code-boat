@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -151,6 +152,10 @@ it.effect("copies a thread's conversation and activity into the matching project
               Layer.mock(ProjectService.ProjectService)({
                 listShells: () => Effect.succeed([home as OrchestrationProjectShell]),
               }),
+              Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                ensureScratchProject: Effect.succeed({ projectId: ProjectId.make("scratch") }),
+                namedProjectsRoot: "/unused",
+              }),
             ),
           ),
         ),
@@ -229,6 +234,22 @@ it.effect("copies a thread's conversation and activity into the matching project
       "Fix the login",
       "Fixed it.",
     ]);
+
+    // The copy reads back in the shape another environment imports.
+    const readBack = yield* importer.copySnapshot(input.originKey);
+    expect(readBack?.continuedHere).toBe(false);
+    expect(readBack?.snapshot.projection.thread.id).toBe(first.threadId);
+    expect(yield* importer.copySnapshot("boat-vm:bx_1:other")).toBeNull();
+
+    const scratch = yield* importer.importThread({
+      originKey: "boat-vm:bx_2:vm-thread",
+      snapshot,
+    });
+    expect(scratch).toEqual({
+      threadId: "import:boat-vm:bx_2:vm-thread",
+      projectId: "scratch",
+      created: true,
+    });
   }),
 );
 

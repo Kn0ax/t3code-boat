@@ -149,11 +149,17 @@ describe("boatVmCopyRoute", () => {
     }
   });
 
-  it("is an ordinary thread once the VM is gone, was continued here, or is no copy", () => {
+  it("continues on a new VM once the VM is gone", () => {
     const base = { copyThreadId, continuedHere: false, pairings: [recordedPairing] };
-    expect(boatVmCopyRoute({ ...base, vms: [vm("destroyed")] })).toBeNull();
-    expect(boatVmCopyRoute({ ...base, vms: [] })).toBeNull();
+    const gone = { vm: null, threadId: "thread-1", environmentId: null };
+    expect(boatVmCopyRoute({ ...base, vms: [vm("destroyed")] })).toEqual(gone);
+    expect(boatVmCopyRoute({ ...base, vms: [] })).toEqual(gone);
+  });
+
+  it("is an ordinary thread until the VMs load, once continued here, or when it is no copy", () => {
+    const base = { copyThreadId, continuedHere: false, pairings: [recordedPairing] };
     expect(boatVmCopyRoute({ ...base, vms: undefined })).toBeNull();
+    expect(boatVmCopyRoute({ ...base, continuedHere: true, vms: [] })).toBeNull();
     expect(boatVmCopyRoute({ ...base, continuedHere: true, vms: [vm("running")] })).toBeNull();
     expect(boatVmCopyRoute({ ...base, copyThreadId: "thread-1", vms: [vm("running")] })).toBeNull();
   });

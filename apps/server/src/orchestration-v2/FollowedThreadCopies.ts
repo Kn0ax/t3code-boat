@@ -3,7 +3,8 @@
  * running or stopped boat VM. While the source exists the conversation goes on
  * there, so ThreadManagementService refuses a message sent to such a copy
  * rather than run it here. Once the source is gone, the copies' owner drops it
- * from this set and the copy becomes an ordinary thread.
+ * from this set; ThreadManagementService still refuses a boat VM copy that was
+ * not continued here, which goes on in a new VM instead.
  *
  * @module FollowedThreadCopies
  */

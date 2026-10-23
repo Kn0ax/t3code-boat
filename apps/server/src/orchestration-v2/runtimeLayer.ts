@@ -250,9 +250,17 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   ),
 );
 
+const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
+  Layer.provide(layerProjectService),
+);
 const layerThreadImportProvided = ThreadImportService.layer.pipe(
   Layer.provide(
-    Layer.mergeAll(layerProjectService, layerOrchestratorProvided, layerEventSinkProvided),
+    Layer.mergeAll(
+      layerProjectService,
+      layerOrchestratorProvided,
+      layerEventSinkProvided,
+      layerManagedProjectFoldersProvided,
+    ),
   ),
 );
 
@@ -268,9 +276,6 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
   ),
 );
 export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
-  Layer.provide(layerProjectService),
-);
-const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(

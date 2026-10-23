@@ -20,6 +20,7 @@ import {
   WS_METHODS,
   type BoatVm,
   type BoatVmBringHomeResult,
+  type BoatVmLaunchInput,
   type BoatVmRepository,
   type OrchestrationV2RunStatus,
   type RepositoryIdentity,
@@ -265,8 +266,9 @@ export function withoutShadowedBoatVmCopies<
 /**
  * Where a send on a boat VM thread's copy goes. While boat still has the VM,
  * the conversation goes on in the VM's thread: open it when the VM runs and
- * this client paired it, else start or pair the VM first. A copy whose VM is
- * gone, or that was continued here, is an ordinary thread (null).
+ * this client paired it, else start or pair the VM first. Once the VM is gone
+ * it goes on in a new VM (`vm` null). A copy that was continued here, or whose
+ * VMs have not loaded, is an ordinary thread (null).
  */
 export function boatVmCopyRoute(input: {
   readonly copyThreadId: string;
@@ -274,18 +276,23 @@ export function boatVmCopyRoute(input: {
   /** The VMs of the environment holding the copy; undefined until they load. */
   readonly vms: ReadonlyArray<BoatVm> | undefined;
   readonly pairings: ReadonlyArray<BoatVmPairing>;
-}): {
-  readonly vm: BoatVm;
-  readonly threadId: ThreadId;
-  /** The VM's environment to open the thread in; null when the VM must start or pair first. */
-  readonly environmentId: EnvironmentId | null;
-} | null {
+}):
+  | {
+      readonly vm: BoatVm;
+      readonly threadId: ThreadId;
+      /** The VM's environment to open the thread in; null when the VM must start or pair first. */
+      readonly environmentId: EnvironmentId | null;
+    }
+  | { readonly vm: null; readonly threadId: ThreadId; readonly environmentId: null }
+  | null {
   const origin = boatVmThreadCopyOrigin(input.copyThreadId);
-  if (origin === null || input.continuedHere) return null;
-  const vm = input.vms?.find(
+  if (origin === null || input.continuedHere || input.vms === undefined) return null;
+  const vm = input.vms.find(
     (candidate) => candidate.sandboxId === origin.sandboxId && candidate.status !== "destroyed",
   );
-  if (vm === undefined) return null;
+  if (vm === undefined) {
+    return { vm: null, threadId: ThreadId.make(origin.threadId), environmentId: null };
+  }
   const environmentId = boatVmEnvironmentOf(input.pairings, origin.sandboxId);
   return {
     vm,
@@ -418,33 +425,25 @@ const CONNECT_TIMEOUT_MS = 60_000;
 const toError = (failure: unknown, fallback: string) =>
   failure instanceof Error ? failure : new Error(fallback);
 
+type LaunchInput = {
+  readonly hostEnvironmentId: EnvironmentId;
+  readonly sandboxId: string | null;
+  readonly repository: BoatVmRepository | null;
+  readonly bannerKey: string;
+};
+
 /**
- * Starts (or resumes) a boat VM through `hostEnvironmentId`, pairs with it,
- * and returns the VM's project for the repository, creating it the first time,
- * with the launch's warning about the checkout, if any. Without a repository
- * the project is the VM's Scratch project, as for a "No project" thread. Progress and failure
- * show in the banner of the composer `bannerKey` names; a failed or cancelled
- * launch resolves to null.
+ * Starts a boat VM through `hostEnvironmentId` and pairs with it once it is
+ * connected; `extra` adds to the launch request. Throws with the reason.
  */
-export function useLaunchBoatVm() {
+function useLaunchAndPairBoatVm() {
   const launch = useAtomCommand(boatVmEnvironment.launch, { reportFailure: false });
   const pair = useAtomCommand(connectPairing, { reportFailure: false });
-  const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
-  const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
-
-  type LaunchInput = {
-    readonly hostEnvironmentId: EnvironmentId;
-    readonly sandboxId: string | null;
-    readonly repository: BoatVmRepository | null;
-    readonly bannerKey: string;
-  };
-  type Launched = {
-    readonly project: EnvironmentProject;
-    readonly projectRef: ScopedProjectRef;
-    readonly warning: string | undefined;
-  };
-
-  const run = async (input: LaunchInput, launchId: string): Promise<Launched> => {
+  return async (
+    input: LaunchInput,
+    launchId: string,
+    extra: Pick<BoatVmLaunchInput, "continueThreadId" | "message"> = {},
+  ) => {
     const launched = await launch({
       environmentId: input.hostEnvironmentId,
       input: {
@@ -452,6 +451,7 @@ export function useLaunchBoatVm() {
         ...(input.sandboxId === null ? {} : { sandboxId: input.sandboxId }),
         ...(input.repository === null ? {} : { repository: input.repository }),
         launchId,
+        ...extra,
       },
     });
     // A new VM exists even when its launch failed, and a resume changes the status.
@@ -493,7 +493,68 @@ export function useLaunchBoatVm() {
       timeoutMs: CONNECT_TIMEOUT_MS,
     });
     if (!connected) throw new Error(`${vm.label} did not connect.`);
+    return { vm, environmentId };
+  };
+}
 
+/**
+ * Runs a launch with its progress and failure in the banner of the composer
+ * `input.bannerKey` names; a failed or cancelled launch resolves to null.
+ */
+async function withLaunchBanner<A>(
+  input: LaunchInput,
+  run: (launchId: string) => Promise<A>,
+): Promise<A | null> {
+  const launchId = randomUUID();
+  startBoatVmLaunch(input.bannerKey, {
+    launchId,
+    hostEnvironmentId: input.hostEnvironmentId,
+    repositoryName: input.repository?.name ?? null,
+    newVm: input.sandboxId === null,
+    phase: "launching",
+  });
+  try {
+    const launched = await run(launchId);
+    updateBoatVmLaunch(input.bannerKey, launchId, null);
+    return launched;
+  } catch (error) {
+    const current = readBoatVmLaunch(input.bannerKey);
+    const cancelled = current?.launchId === launchId && current.phase === "cancelling";
+    updateBoatVmLaunch(
+      input.bannerKey,
+      launchId,
+      cancelled
+        ? null
+        : {
+            phase: "failed",
+            error: error instanceof Error ? error.message : "An error occurred.",
+          },
+    );
+    return null;
+  }
+}
+
+/**
+ * Starts (or resumes) a boat VM through `hostEnvironmentId`, pairs with it,
+ * and returns the VM's project for the repository, creating it the first time,
+ * with the launch's warning about the checkout, if any. Without a repository
+ * the project is the VM's Scratch project, as for a "No project" thread. Progress and failure
+ * show in the banner of the composer `bannerKey` names; a failed or cancelled
+ * launch resolves to null.
+ */
+export function useLaunchBoatVm() {
+  const launchAndPair = useLaunchAndPairBoatVm();
+  const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
+
+  type Launched = {
+    readonly project: EnvironmentProject;
+    readonly projectRef: ScopedProjectRef;
+    readonly warning: string | undefined;
+  };
+
+  const run = async (input: LaunchInput, launchId: string): Promise<Launched> => {
+    const { vm, environmentId } = await launchAndPair(input, launchId);
     if (input.repository === null) {
       const scratch = await openScratch({ environmentId, input: {} });
       if (scratch._tag === "Failure") {
@@ -540,33 +601,37 @@ export function useLaunchBoatVm() {
     return { project, projectRef, warning: vm.warning };
   };
 
-  return async (input: LaunchInput): Promise<Launched | null> => {
-    const launchId = randomUUID();
-    startBoatVmLaunch(input.bannerKey, {
-      launchId,
-      hostEnvironmentId: input.hostEnvironmentId,
-      repositoryName: input.repository?.name ?? null,
-      newVm: input.sandboxId === null,
-      phase: "launching",
+  return (input: LaunchInput): Promise<Launched | null> =>
+    withLaunchBanner(input, (launchId) => run(input, launchId));
+}
+
+/**
+ * Continues a copy whose boat VM was deleted on a new VM, sending `message`
+ * there, and returns the thread on that VM once this client paired with it.
+ * The host picks the repository from the copy; `repository` only names the
+ * launch in the banner. A failed or cancelled launch resolves to null.
+ */
+export function useContinueBoatVmCopy() {
+  const launchAndPair = useLaunchAndPairBoatVm();
+  return (
+    input: Omit<LaunchInput, "sandboxId"> & {
+      readonly copyThreadId: ThreadId;
+      readonly message: string | null;
+    },
+  ): Promise<{
+    readonly threadRef: ScopedThreadRef;
+    readonly warning: string | undefined;
+  } | null> =>
+    withLaunchBanner({ ...input, sandboxId: null }, async (launchId) => {
+      // The host picks the repository from the copy.
+      const target = { ...input, sandboxId: null, repository: null };
+      const { vm, environmentId } = await launchAndPair(target, launchId, {
+        continueThreadId: input.copyThreadId,
+        ...(input.message === null ? {} : { message: input.message }),
+      });
+      if (vm.threadId === undefined) {
+        throw new Error("The environment that holds the boat key cannot continue threads yet.");
+      }
+      return { threadRef: scopeThreadRef(environmentId, vm.threadId), warning: vm.warning };
     });
-    try {
-      const launched = await run(input, launchId);
-      updateBoatVmLaunch(input.bannerKey, launchId, null);
-      return launched;
-    } catch (error) {
-      const current = readBoatVmLaunch(input.bannerKey);
-      const cancelled = current?.launchId === launchId && current.phase === "cancelling";
-      updateBoatVmLaunch(
-        input.bannerKey,
-        launchId,
-        cancelled
-          ? null
-          : {
-              phase: "failed",
-              error: error instanceof Error ? error.message : "An error occurred.",
-            },
-      );
-      return null;
-    }
-  };
 }
