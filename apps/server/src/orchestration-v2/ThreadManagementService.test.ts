@@ -189,48 +189,83 @@ it.effect("refuses a message to a copy that still follows its source, and takes 
   }).pipe(Effect.provide(layerTest));
 });
 
+const layerBoatCopyTest = (input: {
+  readonly threadId: ThreadId;
+  readonly boatKey: string;
+  readonly dispatched: Array<string>;
+  readonly runs: () => ReadonlyArray<{ readonly status: string }>;
+}) =>
+  ThreadManagementService.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getThreadRecords: () =>
+          Effect.sync(
+            () =>
+              ({
+                thread: {
+                  id: input.threadId,
+                  projectId: ProjectId.make("project:thread-management:copy"),
+                  deletedAt: null,
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex_work"),
+                    model: "x",
+                  },
+                },
+                runs: input.runs(),
+              }) as unknown as OrchestrationV2ThreadProjection,
+          ),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            input.dispatched.push(command.type);
+            return { sequence: 1, storedEvents: [] } as never;
+          }),
+      }),
+    ),
+    Layer.provide(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
+        },
+        sandboxJobs: { providerKeys: { boat: input.boatKey } },
+      }),
+    ),
+    Layer.provideMerge(layerReceiptsTest),
+  );
+
+it.effect("a VM that took over a copy accepts sends to the thread under the copy's id", () => {
+  const threadId = ThreadId.make("import:boat-vm:gone:vm-thread");
+  const dispatched: Array<string> = [];
+  return ThreadManagementService.ThreadManagementService.use((threads) =>
+    threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:thread-management:taken-over"),
+      threadId,
+      messageId: MessageId.make("message:thread-management:taken-over"),
+      text: "Continue",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    }),
+  ).pipe(
+    Effect.andThen(Effect.sync(() => expect(dispatched).toEqual(["message.dispatch"]))),
+    Effect.provide(layerBoatCopyTest({ threadId, boatKey: "", dispatched, runs: () => [] })),
+  );
+});
+
 it.effect(
   "refuses a message to a boat VM copy whose VM is gone unless it was continued here",
   () => {
     const threadId = ThreadId.make("import:boat-vm:gone:vm-thread");
     const dispatched: Array<string> = [];
     let runs: ReadonlyArray<{ readonly status: string }> = [{ status: "failed" }];
-    const layerTest = ThreadManagementService.layer.pipe(
-      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-      Layer.provide(
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getThreadRecords: () =>
-            Effect.sync(
-              () =>
-                ({
-                  thread: {
-                    id: threadId,
-                    projectId: ProjectId.make("project:thread-management:copy"),
-                    deletedAt: null,
-                    modelSelection: {
-                      instanceId: ProviderInstanceId.make("codex_work"),
-                      model: "x",
-                    },
-                  },
-                  runs,
-                }) as unknown as OrchestrationV2ThreadProjection,
-            ),
-          dispatch: (command) =>
-            Effect.sync(() => {
-              dispatched.push(command.type);
-              return { sequence: 1, storedEvents: [] } as never;
-            }),
-        }),
-      ),
-      Layer.provide(
-        ServerSettings.layerTest({
-          providerInstances: {
-            [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
-          },
-        }),
-      ),
-      Layer.provideMerge(layerReceiptsTest),
-    );
+    const layerTest = layerBoatCopyTest({
+      threadId,
+      boatKey: "test-boat-key",
+      dispatched,
+      runs: () => runs,
+    });
     const send = (id: string) =>
       ThreadManagementService.ThreadManagementService.use((threads) =>
         threads.dispatch({

@@ -1672,11 +1672,23 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     const requestId = yield* crypto
       .randomUUIDv4()
       .pipe(Effect.mapError(() => vmError("Could not start the thread on the VM.")));
+    // A fresh VM's projects have no default model, so the thread takes this
+    // server's when the caller named none.
+    const defaultModelSelection =
+      thread.modelSelection === undefined
+        ? yield* settingsService.getSettings.pipe(
+            Effect.map((settings) => settings.defaultModelSelection ?? undefined),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
     const request = yield* encodeVmThreadLaunchRequest({
       pairingCode: launched.pairingCode,
       workspaceRoot: repository === undefined ? null : launched.workspaceRoot,
       projectTitle: path.basename(launched.workspaceRoot),
-      thread,
+      thread:
+        defaultModelSelection === undefined
+          ? thread
+          : { ...thread, modelSelection: defaultModelSelection },
     }).pipe(Effect.mapError(() => vmError("Could not start the thread on the VM.")));
     const result = yield* Effect.scoped(
       Effect.gen(function* () {

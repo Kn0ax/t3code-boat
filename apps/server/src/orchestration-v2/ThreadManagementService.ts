@@ -669,6 +669,10 @@ const make = Effect.gen(function* () {
         return yield* reject(FOLLOWED_COPY_REJECTION);
       }
       if (boatVmThreadCopyOrigin(command.threadId) === null) return;
+      // Only the server holding the boat key keeps copies. A VM that took over a
+      // copy keeps its id for the thread it now runs, and must accept sends.
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      if (settings.sandboxJobs.providerKeys.boat.trim() === "") return;
       const { runs } = yield* orchestrator.getThreadRecords(command.threadId, ["runs"]);
       if (!runs.some((run) => run.status !== "failed")) {
         return yield* reject(DELETED_VM_COPY_REJECTION);
