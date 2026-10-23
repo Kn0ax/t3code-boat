@@ -46,6 +46,7 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import { readBoatVmCopyTarget } from "../state/boatVms";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -62,7 +63,7 @@ export function useThreadActionMenu(input: {
   readonly projectCwd: string | null;
   readonly onStartRename: () => void;
 }) {
-  const { threadRef, projectCwd, onStartRename } = input;
+  const { projectCwd, onStartRename } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -112,7 +113,9 @@ export function useThreadActionMenu(input: {
   });
 
   const openMenu = (position: { x: number; y: number }) => {
-    if (threadRef === null) return;
+    if (input.threadRef === null) return;
+    // A stopped boat VM cannot be reached; its thread's copy stands in for it.
+    const threadRef = readBoatVmCopyTarget(input.threadRef);
     void (async () => {
       const api = readLocalApi();
       if (!api) return;

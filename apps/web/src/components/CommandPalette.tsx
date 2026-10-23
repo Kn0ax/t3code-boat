@@ -100,7 +100,11 @@ import { useTheme } from "../hooks/useTheme";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { boatSnapshotEnvironment } from "../state/boatSnapshots";
-import { boatVmEnvironment, describeBroughtHome } from "../state/boatVms";
+import {
+  boatVmEnvironment,
+  describeBroughtHome,
+  useBoatVmEnvironmentLabels,
+} from "../state/boatVms";
 import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
@@ -543,6 +547,7 @@ function OpenCommandPaletteDialog(props: {
       ? null
       : boatVmEnvironment.list({ environmentId: boatVmHostId, input: {} }),
   );
+  useBoatVmEnvironmentLabels(boatVms.data?.available === true ? boatVms.data.vms : undefined);
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();

@@ -52,6 +52,7 @@ import {
   findRouteToSameAddress,
   hasSavedBearerRoute,
   mergeLearnedRoutes,
+  relabeledRoutes,
   routesAfterRemoving,
   upsertRoute,
   type ReportedEndpoint,
@@ -164,6 +165,14 @@ export class EnvironmentRegistry extends Context.Service<
       environmentId: EnvironmentId,
       error: ConnectionBlockedError | null,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    /**
+     * Renames a saved environment's paired-address routes. Does nothing for a
+     * platform-managed or unknown environment.
+     */
+    readonly setLabel: (
+      environmentId: EnvironmentId,
+      label: string,
+    ) => Effect.Effect<void, Persistence.ConnectionPersistenceError | ConnectionAttemptError>;
     readonly state: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<SupervisorConnectionState, EnvironmentNotRegisteredError>;
@@ -1136,6 +1145,37 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const setLabel = Effect.fn("EnvironmentRegistry.setLabel")(function* (
+    environmentId: EnvironmentId,
+    label: string,
+  ) {
+    yield* withLeaseLock(
+      environmentId,
+      Effect.gen(function* () {
+        if ((yield* Ref.get(platformEnvironmentIds)).has(environmentId)) return;
+        const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+        if (entry === undefined || entry.target.label === label) return;
+        const routes = relabeledRoutes(entry, label);
+        for (const route of routes) {
+          const profile = Option.getOrNull(route.profile);
+          if (profile?._tag === "BearerConnectionProfile") yield* profiles.put(profile);
+        }
+        const next = entryWithRoutes(entry, routes);
+        yield* registrations.setRoutes(environmentId, persistedRoutes(next));
+        // In place, like learned routes, so the connection is not torn down.
+        const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
+        if (lease !== undefined) {
+          yield* SubscriptionRef.update(serviceScopes, (current) =>
+            new Map(current).set(environmentId, { ...lease, entry: next }),
+          );
+        }
+        yield* SubscriptionRef.update(entries, (current) =>
+          new Map(current).set(environmentId, next),
+        );
+      }),
+    );
+  });
+
   return EnvironmentRegistry.of({
     entries,
     networkStatus,
@@ -1150,6 +1190,7 @@ export const make = Effect.gen(function* () {
     retryNow,
     setEnabled,
     setCompatibility,
+    setLabel,
     state,
     stateChanges,
     run,

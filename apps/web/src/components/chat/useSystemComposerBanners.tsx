@@ -14,6 +14,7 @@ import { environmentCatalog } from "../../connection/catalog";
 import { ConnectionDiagnosisHeadline } from "../settings/ConnectionDiagnosisDetails";
 import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
 import { useEnvironmentDisconnectDelay } from "../../hooks/useEnvironmentDisconnectDelay";
+import { boatVmEnvironmentLabel } from "../../state/boatVms";
 import { serverEnvironment } from "../../state/server";
 import { type EnvironmentPresentation } from "../../state/environments";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
@@ -224,7 +225,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         icon: <WifiOffIcon />,
         title:
           stoppedBoatVm !== null
-            ? `boat: ${stoppedBoatVm.label} is stopped`
+            ? `${boatVmEnvironmentLabel(stoppedBoatVm.label)} is stopped`
             : `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
         description: activeEnvironment ? (
           <ConnectionDiagnosisHeadline environment={activeEnvironment} />

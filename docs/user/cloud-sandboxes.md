@@ -147,19 +147,30 @@ The server with the boat key also keeps a copy of every thread on its running
 VMs. About every 5 minutes it copies new messages and tool activity from the
 VM's threads to its own project for the same repository, or to its **No
 project** when it has none for that repository or the VM was started without
-one. Deleted threads are never copied, and deleting a thread on the VM deletes
-its copy. If you send a message in a copy, it becomes your own thread and stops
-following the VM.
+one. Subagent threads are not copied on their own. Deleted threads are never
+copied, and deleting a thread on the VM deletes its copy.
+
+While boat still has the VM, running or stopped, the copy is read-only and
+points at the VM's thread: choose **Open on VM** in its composer to continue
+there. A stopped VM is started first, and a VM this device has not paired yet
+is paired. When this device lists the VM's own thread and can reach the VM, the
+copy is left out of the sidebar; while the VM is stopped, the copy shows
+instead. Settling or archiving the copy counts as settling the VM's thread. Once
+the VM is deleted, the copy becomes your own thread and you can send messages in
+it.
 
 On the same check, it acts once every thread on a VM agrees, after copying the
 threads one last time:
 
-- Every thread snoozed, or without a message for the minutes you set: the VM
-  stops and keeps its disk. Picking it in **Run on**, or **Start VM** on its
+- Every thread snoozed, or without a message for the minutes you set, and no
+  subagent still running: the VM stops and keeps its disk. Picking it in **Run on**, or **Start VM** on its
   thread, resumes it.
-- Every thread archived, settled, or deleted: the VM is deleted. If a copy
+- Every thread archived, settled, or deleted: the copies are settled and the VM
+  stops. If it stays that way for 3 days, the VM is deleted, even while
+  stopped. Reopening a copy, or a new message on the VM, keeps it. If a copy
   fails, for example because no project there has that repository, the VM is
-  kept and the copy retried.
+  kept running and the copy retried.
+- Every thread deleted: the VM is deleted.
 - A VM you just started or resumed is left alone for the minutes you set.
 
 A copy keeps the conversation and tool activity, but not checkpoints or

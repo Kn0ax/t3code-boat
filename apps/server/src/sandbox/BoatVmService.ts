@@ -78,6 +78,7 @@ import type * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ServerConfig from "../config.ts";
+import * as FollowedThreadCopies from "../orchestration-v2/FollowedThreadCopies.ts";
 import * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -790,6 +791,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     statePath: path.join((yield* ServerConfig.ServerConfig).stateDir, "boat-vm-threads.json"),
     manager,
     threadImport: yield* ThreadImportService.ThreadImportService,
+    followedCopies: yield* FollowedThreadCopies.FollowedThreadCopies,
     homeProjectFor: (remoteUrl) => {
       const scratch = managedFolders.ensureScratchProject.pipe(
         Effect.map(({ projectId }) => projectId),
@@ -805,10 +807,15 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
             }),
           );
     },
-    beforeDelete: (provider, ref) =>
-      provider
-        .exec(ref, { script: TAILNET_LOGOUT_SCRIPT, timeoutMs: 20_000 })
-        .pipe(Effect.ignore, Effect.andThen(managerAccess.revoke(ref.sandboxId))),
+    // A stopped VM keeps its tailnet node; an auth-key node is ephemeral, so
+    // Tailscale removes it once it stays offline.
+    beforeDelete: (provider, ref, vm) =>
+      (vm.running
+        ? provider
+            .exec(ref, { script: TAILNET_LOGOUT_SCRIPT, timeoutMs: 20_000 })
+            .pipe(Effect.ignore)
+        : Effect.void
+      ).pipe(Effect.andThen(managerAccess.revoke(ref.sandboxId))),
   });
 
   /**
@@ -1536,6 +1543,11 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
               }),
             ),
           ),
+        { concurrency: 4, discard: true },
+      );
+      yield* Effect.forEach(
+        vms.filter((vm) => vm.status === "stopped"),
+        (vm) => lifecycle.applyStopped(provider, vm.ref),
         { concurrency: 4, discard: true },
       );
       yield* lifecycle

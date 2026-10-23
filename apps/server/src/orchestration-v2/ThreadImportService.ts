@@ -200,6 +200,13 @@ function mirrorUpdateEvents(input: {
   ];
 }
 
+export interface CopyState {
+  /** When the copy was settled or archived; null while it is open. */
+  readonly doneAtMs: number | null;
+  /** When someone reopened the copy here; null unless it was. */
+  readonly reopenedAtMs: number | null;
+}
+
 export class ThreadImportProjectNotFoundError extends Schema.TaggedError<ThreadImportProjectNotFoundError>()(
   "ThreadImportProjectNotFoundError",
   { repositoryRemoteUrl: Schema.String },
@@ -239,6 +246,16 @@ export class ThreadImportService extends Context.Service<
     readonly deleteCopy: (
       originKey: string,
     ) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
+    /** Whether the copy of `originKey` is settled or archived here; null when there is none. */
+    readonly copyState: (originKey: string) => Effect.Effect<CopyState | null>;
+    /**
+     * Settles the copy of `originKey`. `episode` keeps the command id apart
+     * from an earlier settle of the same copy.
+     */
+    readonly settleCopy: (
+      originKey: string,
+      episode: number,
+    ) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
   }
 >()("t3/orchestration-v2/ThreadImportService") {}
 
@@ -267,9 +284,13 @@ const make = Effect.gen(function* () {
     return { threadId, projectId: project.id, created: true };
   });
 
-  // A copy carries no runs, so a run on it means someone continued it here.
   const readCopy = (threadId: ThreadId) =>
     Effect.option(orchestrator.getThreadRecords(threadId, ["runs", "messages", "turnItems"]));
+  // A copy carries no runs, so a run on it that did not fail means someone
+  // continued it here. Sends that only failed, such as at provider startup,
+  // leave it a copy.
+  const continuedHere = (copy: { readonly runs: ReadonlyArray<{ readonly status: string }> }) =>
+    copy.runs.some((run) => run.status !== "failed");
 
   const mirrorThread: ThreadImportService["Service"]["mirrorThread"] = Effect.fn(
     "ThreadImportService.mirrorThread",
@@ -288,7 +309,7 @@ const make = Effect.gen(function* () {
     }
     const home = existing.value;
     if (home.thread.deletedAt !== null) return { threadId, outcome: "deleted" as const };
-    if (home.runs.length > 0) return { threadId, outcome: "continued" as const };
+    if (continuedHere(home)) return { threadId, outcome: "continued" as const };
     const events = mirrorUpdateEvents({ home, snapshot: input.snapshot });
     if (events.length === 0) return { threadId, outcome: "unchanged" as const };
     yield* eventSink.write({ events });
@@ -301,7 +322,7 @@ const make = Effect.gen(function* () {
     const threadId = importedThreadId(originKey);
     const existing = yield* readCopy(threadId);
     if (Option.isNone(existing) || existing.value.thread.deletedAt !== null) return;
-    if (existing.value.runs.length > 0) return;
+    if (continuedHere(existing.value)) return;
     yield* orchestrator.dispatch({
       type: "thread.delete",
       commandId: CommandId.make(`thread-import-delete:${threadId}`),
@@ -309,7 +330,41 @@ const make = Effect.gen(function* () {
     });
   });
 
-  return ThreadImportService.of({ importThread, mirrorThread, deleteCopy });
+  const copyState: ThreadImportService["Service"]["copyState"] = Effect.fn(
+    "ThreadImportService.copyState",
+  )(function* (originKey) {
+    const existing = yield* Effect.option(
+      orchestrator.getThreadRecords(importedThreadId(originKey), []),
+    );
+    if (Option.isNone(existing) || existing.value.thread.deletedAt !== null) return null;
+    const { thread } = existing.value;
+    const ms = (at: DateTime.Utc | null | undefined) =>
+      at == null ? null : DateTime.toEpochMillis(at);
+    if (thread.archivedAt !== null) return { doneAtMs: ms(thread.archivedAt), reopenedAtMs: null };
+    return {
+      doneAtMs: thread.settledOverride === "settled" ? (ms(thread.settledAt) ?? 0) : null,
+      reopenedAtMs: thread.settledOverride === "active" ? ms(thread.unsettledAt) : null,
+    };
+  });
+
+  const settleCopy: ThreadImportService["Service"]["settleCopy"] = Effect.fn(
+    "ThreadImportService.settleCopy",
+  )(function* (originKey, episode) {
+    const threadId = importedThreadId(originKey);
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make(`thread-import-settle:${threadId}:${episode}`),
+      threadId,
+    });
+  });
+
+  return ThreadImportService.of({
+    importThread,
+    mirrorThread,
+    deleteCopy,
+    copyState,
+    settleCopy,
+  });
 });
 
 export const layer = Layer.effect(ThreadImportService, make);

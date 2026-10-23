@@ -56,6 +56,8 @@ export type SandboxControlError =
 
 export interface PairingConnectionInput {
   readonly boatVm?: { readonly sandboxId: string; readonly hostEnvironmentId: EnvironmentId };
+  /** Replaces the label the server reports for itself, such as a VM's host name. */
+  readonly label?: string;
   readonly boatProxy?: {
     readonly sandboxId: string;
     readonly token: string;
@@ -203,17 +205,18 @@ export const preparePairingRegistration = Effect.fn(
     clientMetadata: presentation.metadata,
   }).pipe(Effect.mapError(mapRemoteEnvironmentError));
   const connectionId = bearerConnectionId(descriptor.environmentId, target.httpBaseUrl);
+  const label = input.label ?? descriptor.label;
 
   return new BearerConnectionRegistration({
     target: new BearerConnectionTarget({
       environmentId: descriptor.environmentId,
-      label: descriptor.label,
+      label,
       connectionId,
     }),
     profile: new BearerConnectionProfile({
       connectionId,
       environmentId: descriptor.environmentId,
-      label: descriptor.label,
+      label,
       httpBaseUrl: target.httpBaseUrl,
       wsBaseUrl: target.wsBaseUrl,
       ...(input.boatVm === undefined ? {} : { boatVm: input.boatVm }),

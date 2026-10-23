@@ -260,6 +260,37 @@ it.effect("refuses a thread whose repository has no project here", () =>
 
 const decodeRun = Schema.decodeUnknownSync(OrchestrationV2Run);
 
+/** A run someone started on a copy here. */
+const homeRunCreated = (
+  threadId: ThreadId,
+  id: string,
+  ordinal: number,
+  status: "failed" | "completed",
+) => ({
+  id: EventId.make(id),
+  type: "run.created" as const,
+  threadId,
+  runId: RunId.make(id),
+  occurredAt: now,
+  payload: decodeRun({
+    id,
+    threadId,
+    ordinal,
+    providerInstanceId: "codex",
+    modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+    providerThreadId: null,
+    userMessageId: "home-message",
+    rootNodeId: null,
+    activeAttemptId: null,
+    status,
+    requestedAt: now,
+    startedAt: now,
+    completedAt: now,
+    checkpointId: null,
+    contextHandoffId: null,
+  }),
+});
+
 it.effect("mirrors a thread: creates the copy, then adds only what is new", () =>
   Effect.gen(function* () {
     const runtime = ProviderReplayHarness.layerWithRegistry(
@@ -330,35 +361,28 @@ it.effect("mirrors a thread: creates the copy, then adds only what is new", () =
       "Fixed it.",
     ]);
 
-    // Someone continued the copy here: it carries a run of its own now.
-    yield* Context.get(services, EventSinkV2).write({
-      events: [
-        {
-          id: EventId.make("home-run"),
-          type: "run.created",
-          threadId: copyId,
-          runId: RunId.make("home-run"),
-          occurredAt: now,
-          payload: decodeRun({
-            id: "home-run",
-            threadId: copyId,
-            ordinal: 1,
-            providerInstanceId: "codex",
-            modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-            providerThreadId: null,
-            userMessageId: "home-message",
-            rootNodeId: null,
-            activeAttemptId: null,
-            status: "completed",
-            requestedAt: now,
-            startedAt: now,
-            completedAt: now,
-            checkpointId: null,
-            contextHandoffId: null,
-          }),
-        },
-      ],
+    // Settled here, the copy stays settled through a later update.
+    const originKey = "boat-vm:bx_1:vm-thread";
+    expect(yield* importer.copyState(originKey)).toEqual({ doneAtMs: null, reopenedAtMs: null });
+    yield* importer.settleCopy(originKey, 1);
+    const renamed = snapshotWith(10, 3);
+    const update = yield* mirror({
+      ...renamed,
+      projection: {
+        ...renamed.projection,
+        thread: { ...renamed.projection.thread, title: "Fix the login flow" },
+      },
     });
+    expect(update.outcome).toBe("updated");
+    expect((yield* importer.copyState(originKey))?.doneAtMs).not.toBeNull();
+
+    const eventSink = Context.get(services, EventSinkV2);
+    // A send here that only failed leaves it a copy, still mirrored.
+    yield* eventSink.write({ events: [homeRunCreated(copyId, "home-run-failed", 1, "failed")] });
+    expect((yield* mirror(snapshotWith(12, 3))).outcome).toBe("updated");
+
+    // Someone continued the copy here: it carries a run of its own now.
+    yield* eventSink.write({ events: [homeRunCreated(copyId, "home-run", 2, "completed")] });
     const before = yield* storedEvents();
     expect((yield* mirror(snapshotWith(12, 3))).outcome).toBe("continued");
     yield* importer.deleteCopy("boat-vm:bx_1:vm-thread");
@@ -403,6 +427,10 @@ it.effect("deletes a mirrored copy and never brings it back", () =>
       },
     };
     const { threadId } = yield* importer.mirrorThread(input);
+    // A send here that only failed does not keep the copy.
+    yield* Context.get(services, EventSinkV2).write({
+      events: [homeRunCreated(threadId, "home-run-failed", 1, "failed")],
+    });
 
     yield* importer.deleteCopy(input.originKey);
 

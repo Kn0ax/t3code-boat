@@ -219,13 +219,16 @@ import { useEnvironmentQuery } from "../state/query";
 import {
   boatVmEnvironment,
   boatVmDraftLaunch,
+  boatVmPairingOf,
   boatVmRepositoryOf,
   boatVmRunOnOptions,
   newBoatVmEntry,
+  useBoatVmEnvironmentLabels,
   pairedBoatVm,
   useLaunchBoatVm,
 } from "../state/boatVms";
 import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
+import { useBoatVmCopy } from "./chat/useBoatVmCopy";
 import { useBoatVmLaunchBanner } from "./chat/useBoatVmLaunchBanner";
 import { useEnvironmentScope } from "~/state/session";
 import {
@@ -1172,17 +1175,16 @@ export default function ChatView(props: ChatViewProps) {
       ? null
       : boatVmEnvironment.list({ environmentId: boatVmManagingHostId, input: {} }),
   );
-  const boatVmHostnameOf = (environmentId: EnvironmentId) => {
-    const profile = environmentById.get(environmentId)?.entry.profile;
-    return profile?._tag === "Some" && profile.value._tag === "BearerConnectionProfile"
-      ? (URL.parse(profile.value.httpBaseUrl)?.hostname.split(".")[0] ?? null)
-      : null;
+  useBoatVmEnvironmentLabels(boatVms.data?.available === true ? boatVms.data.vms : undefined);
+  const boatVmPairingFor = (environmentId: EnvironmentId) => {
+    const entry = environmentById.get(environmentId)?.entry;
+    return entry === undefined ? null : boatVmPairingOf(entry);
   };
+  const boatVmHostnameOf = (environmentId: EnvironmentId) =>
+    boatVmPairingFor(environmentId)?.hostname ?? null;
   const boatVmPairedOf = (environmentId: EnvironmentId) => {
-    const profile = environmentById.get(environmentId)?.entry.profile;
-    if (profile?._tag !== "Some" || profile.value._tag !== "BearerConnectionProfile") return null;
-    const vm = profile.value.boatVm;
-    return vm === undefined
+    const vm = boatVmPairingFor(environmentId)?.recorded ?? null;
+    return vm === null
       ? null
       : { sandboxId: vm.sandboxId, owned: vm.hostEnvironmentId === boatVmManagingHostId };
   };
@@ -1223,6 +1225,14 @@ export default function ChatView(props: ChatViewProps) {
   const launchBoatVm = useLaunchBoatVm();
   const boatVmLaunchKey = draftId ?? routeThreadKey;
   const boatVmLaunchBannerItem = useBoatVmLaunchBanner(boatVmLaunchKey);
+  const boatVmCopy = useBoatVmCopy({
+    thread: isServerThread && activeThread !== undefined ? activeThread : null,
+    repository: activeProjectIsScratch
+      ? "scratch"
+      : boatVmRepositoryOf(activeProject?.repositoryIdentity),
+    launchBoatVm,
+    bannerKey: boatVmLaunchKey,
+  });
   const [startingBoatVm, setStartingBoatVm] = useState(false);
   const startUnavailableBoatVm = () => {
     const repository = boatVmRepositoryOf(activeProject?.repositoryIdentity);
@@ -2732,9 +2742,11 @@ export default function ChatView(props: ChatViewProps) {
       (item) => item !== null,
     );
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
-    const projectCloneItems = [projectCloneBannerItem, boatVmLaunchBannerItem].filter(
-      (item) => item !== null,
-    );
+    const projectCloneItems = [
+      projectCloneBannerItem,
+      boatVmLaunchBannerItem,
+      boatVmCopy.bannerItem,
+    ].filter((item) => item !== null);
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
@@ -3654,7 +3666,8 @@ export default function ChatView(props: ChatViewProps) {
                                           ? "Messages loading"
                                           : worktreeSetupBlocksSend
                                             ? "Preparing worktree"
-                                            : projectCloneSendBlockReason
+                                            : (boatVmCopy.sendDisabledReason ??
+                                              projectCloneSendBlockReason)
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
                               queuedRunsControl={queuedRunsControl}

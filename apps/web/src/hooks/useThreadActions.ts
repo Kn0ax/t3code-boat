@@ -59,6 +59,7 @@ import { showThreadUndoNotice } from "./showThreadUndoNotice";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
+import { readBoatVmCopyTarget } from "../state/boatVms";
 
 export class ThreadArchiveBlockedError extends Schema.TaggedError<ThreadArchiveBlockedError>()(
   "ThreadArchiveBlockedError",
@@ -320,7 +321,8 @@ export function useThreadActions() {
     return resolveThreadRouteRef(currentRouteParams);
   };
 
-  const unarchiveThread = async (target: ScopedThreadRef, opts: { navigate?: boolean } = {}) => {
+  const unarchiveThread = async (requested: ScopedThreadRef, opts: { navigate?: boolean } = {}) => {
+    const target = readBoatVmCopyTarget(requested);
     ThreadUndo.invalidate("archive", scopedThreadKey(target));
     const result = await unarchiveThreadMutation({
       environmentId: target.environmentId,
@@ -341,8 +343,11 @@ export function useThreadActions() {
     return result;
   };
 
-  const archiveThread = async (target: ScopedThreadRef, opts: { onArchived?: () => void } = {}) => {
-    const resolved = resolveThreadTarget(target);
+  const archiveThread = async (
+    requested: ScopedThreadRef,
+    opts: { onArchived?: () => void } = {},
+  ) => {
+    const resolved = resolveThreadTarget(readBoatVmCopyTarget(requested));
     if (!resolved) return AsyncResult.success(undefined);
     const { thread, threadRef } = resolved;
     if (!threadRuntimeCanArchive(thread.runtime)) {
@@ -596,7 +601,8 @@ export function useThreadActions() {
     return deleteResult;
   };
 
-  const unsettleThread = async (target: ScopedThreadRef) => {
+  const unsettleThread = async (requested: ScopedThreadRef) => {
+    const target = readBoatVmCopyTarget(requested);
     if (!readEnvironmentSupportsSettlement(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
@@ -693,7 +699,9 @@ export function useThreadActions() {
     return result;
   };
 
-  const settleThread = async (target: ScopedThreadRef) => {
+  const settleThread = async (requested: ScopedThreadRef) => {
+    // A stopped boat VM cannot be reached; its thread's copy stands in for it.
+    const target = readBoatVmCopyTarget(requested);
     if (!readEnvironmentSupportsSettlement(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(

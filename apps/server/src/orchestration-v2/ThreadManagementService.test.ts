@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as FollowedThreadCopies from "./FollowedThreadCopies.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -146,6 +147,47 @@ it.effect(
     }).pipe(Effect.provide(layerTest));
   },
 );
+
+it.effect("refuses a message to a copy that still follows its source, and takes it after", () => {
+  const threadId = ThreadId.make("thread:thread-management:chokepoint");
+  const dispatched: Array<string> = [];
+  const layerTest = layerDispatchChokepointTest(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [ProviderInstanceId.make("codex_work")]: { driver: "codex", enabled: true },
+      },
+    }),
+  )(dispatched).pipe(Layer.provideMerge(FollowedThreadCopies.layer));
+  const send = (id: string) =>
+    ThreadManagementService.ThreadManagementService.use((threads) =>
+      threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`command:thread-management:copy-${id}`),
+        threadId,
+        messageId: MessageId.make(`message:thread-management:copy-${id}`),
+        text: "Continue",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      }),
+    );
+
+  return Effect.gen(function* () {
+    const followed = yield* FollowedThreadCopies.FollowedThreadCopies;
+    yield* followed.replace(new Set([threadId]));
+    const error = yield* Effect.flip(send("followed"));
+    expect(error).toBeInstanceOf(Orchestrator.OrchestratorCommandRejectedError);
+    expect(error).toMatchObject({
+      cause: expect.stringContaining("copy of a thread on a boat VM"),
+    });
+    expect(dispatched).toEqual([]);
+
+    yield* followed.replace(new Set());
+    yield* send("released");
+    expect(dispatched).toEqual(["message.dispatch"]);
+  }).pipe(Effect.provide(layerTest));
+});
 
 it.effect("uses thread-not-found only after a projection loads outside the project", () => {
   const projectId = ProjectId.make("project:thread-management:requested");

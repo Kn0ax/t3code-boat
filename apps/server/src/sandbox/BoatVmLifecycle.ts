@@ -6,14 +6,24 @@
  * VM's thread is. Deleted threads are never copied. A thread of a project with
  * no repository remote, such as a scratch VM's "No project", or of a repository
  * no project here checks out, is mirrored into this server's own scratch
- * project.
+ * project. Subagent threads are not copied on their own: their work is in the
+ * parent's items, and a copy each would add a top-level thread here.
+ *
+ * While the VM exists, running or stopped, its copies are followed copies
+ * (FollowedThreadCopies): a message sent to one is refused, because the
+ * conversation goes on in the VM's thread. Once the VM is gone they become
+ * ordinary threads.
  *
  * A VM holds the threads of one repository, so a rule applies once it holds
- * for every thread on the VM:
+ * for every top-level thread on the VM, and while no subagent is at work:
  *
  * - every thread deleted: delete the VM;
- * - every thread archived, settled or deleted: delete the VM once every copy
- *   is up to date;
+ * - every thread archived, settled or deleted: once every copy is up to date,
+ *   settle the copies and stop the VM, then delete it once it has stayed that
+ *   way for BOAT_VM_SETTLED_DELETE_AFTER_MS. A thread counts as settled when
+ *   its copy here was settled or archived after the thread's last activity.
+ *   While the VM is stopped its threads cannot change, so its copies decide:
+ *   reopening one keeps the VM;
  * - every other thread snoozed or quiet for the idle window: stop the VM, even
  *   when a copy is behind, since the stopped VM keeps its disk.
  *
@@ -25,7 +35,11 @@
  *
  * @module BoatVmLifecycle
  */
-import { OrchestrationV2ThreadDetailSnapshot, type ProjectId } from "@t3tools/contracts";
+import {
+  boatVmThreadOriginKey,
+  OrchestrationV2ThreadDetailSnapshot,
+  type ProjectId,
+} from "@t3tools/contracts";
 import {
   SANDBOX_STATE_KEY,
   type SandboxEnvironmentManager,
@@ -39,9 +53,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import type * as FollowedThreadCopies from "../orchestration-v2/FollowedThreadCopies.ts";
 import type * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
 
 const SCRIPT_TIMEOUT_MS = 2 * 60_000;
+/** How long a VM whose threads are all settled stays stopped before it is deleted. */
+export const BOAT_VM_SETTLED_DELETE_AFTER_MS = 3 * 24 * 60 * 60_000;
 
 const LOCAL_T3 = `set -eu
 STATE_DIR="$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}"
@@ -77,20 +94,28 @@ for (const id of process.argv.slice(1)) {
   if (listed.has(id)) continue;
   const response = await get("/api/orchestration/threads/" + encodeURIComponent(id));
   if (response.status === 404) {
-    departed.push({ id, state: "deleted", version: null });
+    departed.push({ id, state: "deleted", version: null, parentThreadId: null });
     continue;
   }
   const { projection } = await response.json();
   const { thread } = projection;
   const state = thread.deletedAt != null ? "deleted" : thread.archivedAt != null ? "archived" : "unknown";
-  departed.push({ id, state, version: state === "archived" ? [thread.updatedAt, projection.updatedAt].join("|") : null });
+  departed.push({
+    id,
+    state,
+    version: state === "archived" ? [thread.updatedAt, projection.updatedAt].join("|") : null,
+    parentThreadId: thread.lineage?.parentThreadId ?? null,
+  });
 }
 process.stdout.write(JSON.stringify({
   threads: shell.threads.map((thread) => ({
     id: thread.id,
     projectId: thread.projectId,
+    parentThreadId: thread.lineage?.parentThreadId ?? null,
     status: thread.status,
     settled: thread.settledOverride === "settled",
+    settledAt: thread.settledAt ?? null,
+    unsettledAt: thread.unsettledAt ?? null,
     snoozedUntil: thread.snoozedUntil ?? null,
     latestUserMessageAt: thread.latestUserMessageAt ?? null,
     createdAt: thread.createdAt,
@@ -137,14 +162,40 @@ const REMOVE_SNAPSHOT_SCRIPT = `rm -f "$HOME/.t3/boat-lifecycle-thread.json"`;
 export const VmThread = Schema.Struct({
   id: Schema.String,
   projectId: Schema.String,
+  /** Set on a subagent thread. */
+  parentThreadId: Schema.NullOr(Schema.String),
   status: Schema.String,
   settled: Schema.Boolean,
+  settledAt: Schema.NullOr(Schema.String),
+  unsettledAt: Schema.NullOr(Schema.String),
   snoozedUntil: Schema.NullOr(Schema.String),
   latestUserMessageAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   version: Schema.String,
 });
 export type VmThread = typeof VmThread.Type;
+
+const epochMs = (iso: string | null) => (iso === null ? 0 : Date.parse(iso));
+
+/**
+ * Whether a VM thread is settled, on the VM or through its copy here: the
+ * latest of settling it on the VM, settling or archiving its copy, reopening
+ * its copy, and activity on the VM wins.
+ */
+export function vmThreadSettled(
+  thread: VmThread,
+  copy: ThreadImportService.CopyState | null,
+): boolean {
+  const reopenedAt = copy?.reopenedAtMs ?? null;
+  if (thread.settled && (reopenedAt === null || reopenedAt <= epochMs(thread.settledAt))) {
+    return true;
+  }
+  const doneAt = copy?.doneAtMs ?? null;
+  return (
+    doneAt !== null &&
+    doneAt >= Math.max(epochMs(thread.latestUserMessageAt), epochMs(thread.unsettledAt))
+  );
+}
 
 const VmThreads = Schema.Struct({
   threads: Schema.Array(VmThread),
@@ -153,6 +204,7 @@ const VmThreads = Schema.Struct({
       id: Schema.String,
       state: Schema.Literals(["archived", "deleted", "unknown"]),
       version: Schema.NullOr(Schema.String),
+      parentThreadId: Schema.NullOr(Schema.String),
     }),
   ),
   projects: Schema.Array(
@@ -177,6 +229,8 @@ const LifecycleState = Schema.fromJsonString(
     mirrorsByVm: Schema.optionalKey(
       Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
     ),
+    /** When each VM was stopped with every thread settled, by sandbox id, in epoch ms. */
+    settledSince: Schema.optionalKey(Schema.Record(Schema.String, Schema.Number)),
   }),
 );
 const decodeState = Schema.decodeUnknownEffect(LifecycleState);
@@ -192,8 +246,10 @@ const BUSY_STATUSES: ReadonlySet<string> = new Set([
 ]);
 
 function decide(input: {
-  /** The VM's unarchived threads. */
+  /** The VM's unarchived top-level threads, `settled` as vmThreadSettled tells. */
   readonly threads: ReadonlyArray<VmThread>;
+  /** The VM's unarchived subagent threads; one with a run in flight is work on the VM. */
+  readonly subagents: ReadonlyArray<VmThread>;
   /** Remembered threads that are archived now. */
   readonly archived: ReadonlyArray<string>;
   /** Remembered threads that left the list without being archived or deleted. */
@@ -204,9 +260,11 @@ function decide(input: {
   readonly idleMinutes: number;
   /** When this server last launched or resumed the VM, if it did. */
   readonly launchedAtMs: number | undefined;
-}): "none" | "stop" | "delete" {
+}): "none" | "stop" | "settle" | "delete" {
   const quietSince = input.nowMs - input.idleMinutes * 60_000;
   if (input.unknown.length > 0) return "none";
+  // A delegated task can run on while its parent waits idle.
+  if (input.subagents.some((thread) => BUSY_STATUSES.has(thread.status))) return "none";
   // A VM the user just started or resumed gets the idle window before any rule
   // applies, so resuming a snoozed or done thread's VM does not undo itself.
   if (input.launchedAtMs !== undefined && input.launchedAtMs > quietSince) return "none";
@@ -214,7 +272,7 @@ function decide(input: {
     return input.hadThreads ? "delete" : "none";
   }
   const open = input.threads.filter((thread) => !thread.settled);
-  if (open.length === 0) return "delete";
+  if (open.length === 0) return "settle";
   const resting = (thread: VmThread) =>
     (thread.snoozedUntil !== null && Date.parse(thread.snoozedUntil) > input.nowMs) ||
     (!BUSY_STATUSES.has(thread.status) &&
@@ -223,8 +281,6 @@ function decide(input: {
 }
 
 type LifecycleOutcome = "stopped" | "deleted" | "kept";
-
-const originKeyOf = (sandboxId: string, threadId: string) => `boat-vm:${sandboxId}:${threadId}`;
 
 class LifecycleProblem extends Schema.TaggedError<LifecycleProblem>()("LifecycleProblem", {
   message: Schema.String,
@@ -235,13 +291,21 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
   readonly statePath: string;
   readonly manager: SandboxEnvironmentManager["Service"];
   readonly threadImport: ThreadImportService.ThreadImportService["Service"];
+  readonly followedCopies: FollowedThreadCopies.FollowedThreadCopies["Service"];
   /**
    * This server's project for a VM project's repository remote, or its scratch
    * project when there is none; fails with why it cannot tell.
    */
   readonly homeProjectFor: (remoteUrl: string | null) => Effect.Effect<ProjectId, string>;
-  /** Run before deleting a VM, such as releasing its tailnet node; failures are ignored. */
-  readonly beforeDelete: (provider: SandboxProviderShape, ref: SandboxRef) => Effect.Effect<void>;
+  /**
+   * Run before deleting a VM, such as releasing its tailnet node; failures are
+   * ignored. A stopped VM must not be reached, since that may start it.
+   */
+  readonly beforeDelete: (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+    vm: { readonly running: boolean },
+  ) => Effect.Effect<void>;
 }) {
   const { manager, threadImport } = input;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -249,7 +313,11 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
 
   const stored = yield* fileSystem.readFileString(input.statePath).pipe(
     Effect.flatMap(decodeState),
-    Effect.orElseSucceed(() => ({ threadsByVm: {}, mirrorsByVm: undefined })),
+    Effect.orElseSucceed(() => ({
+      threadsByVm: {},
+      mirrorsByVm: undefined,
+      settledSince: undefined,
+    })),
   );
   const threadsByVm = new Map<string, ReadonlyArray<string>>(Object.entries(stored.threadsByVm));
   const mirrorsByVm = new Map<string, Map<string, string | null>>(
@@ -258,15 +326,34 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       new Map(Object.entries(mirrors)),
     ]),
   );
+  const settledSince = new Map<string, number>(Object.entries(stored.settledSince ?? {}));
   const launchedAt = new Map<string, number>();
+  // A copy left alone (null) by an earlier start is checked once more, since
+  // what counts as continued here can differ between versions; ThreadImportService
+  // leaves alone again any copy that still is. Keys are "<sandboxId> <threadId>".
+  const leftAloneChecked = new Set<string>();
   const encodeCurrent = () =>
     encodeState({
       threadsByVm: Object.fromEntries(threadsByVm),
       mirrorsByVm: Object.fromEntries(
         [...mirrorsByVm].map(([sandboxId, mirrors]) => [sandboxId, Object.fromEntries(mirrors)]),
       ),
+      settledSince: Object.fromEntries(settledSince),
     });
   let persisted = yield* encodeCurrent().pipe(Effect.orElseSucceed(() => ""));
+
+  /** Every copy of a thread on a VM boat still has, except one left alone here. */
+  const publishFollowed = () =>
+    input.followedCopies.replace(
+      new Set(
+        [...mirrorsByVm].flatMap(([sandboxId, mirrors]) =>
+          [...mirrors]
+            .filter(([, version]) => version !== null)
+            .map(([threadId]) => `import:${boatVmThreadOriginKey(sandboxId, threadId)}`),
+        ),
+      ),
+    );
+  yield* publishFollowed();
 
   const markLaunched = (sandboxId: string) =>
     Clock.currentTimeMillis.pipe(Effect.map((now) => void launchedAt.set(sandboxId, now)));
@@ -322,7 +409,11 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       .homeProjectFor(remoteUrl)
       .pipe(Effect.mapError((reason) => problem(`thread ${threadId}: ${reason}`)));
     const mirrored = yield* threadImport
-      .mirrorThread({ originKey: originKeyOf(ref.sandboxId, threadId), projectId, snapshot })
+      .mirrorThread({
+        originKey: boatVmThreadOriginKey(ref.sandboxId, threadId),
+        projectId,
+        snapshot,
+      })
       .pipe(Effect.mapError((error) => problem(error.message)));
     return mirrored.outcome;
   });
@@ -344,12 +435,12 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     const problems: Array<string> = [];
     for (const threadId of deleted) {
       if (!mirrors.has(threadId)) continue;
-      if (mirrors.get(threadId) === null) {
+      if (mirrors.get(threadId) === null && leftAloneChecked.has(`${sandboxId} ${threadId}`)) {
         mirrors.delete(threadId);
         continue;
       }
       const removed = yield* Effect.result(
-        threadImport.deleteCopy(originKeyOf(sandboxId, threadId)),
+        threadImport.deleteCopy(boatVmThreadOriginKey(sandboxId, threadId)),
       );
       if (removed._tag === "Failure") {
         problems.push(`thread ${threadId}: ${removed.failure.message}`);
@@ -359,17 +450,20 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     }
     for (const { id: threadId, version } of present) {
       const previous = mirrors.get(threadId);
-      if (previous === null || previous === version) continue;
+      const key = `${sandboxId} ${threadId}`;
+      if (previous === version || (previous === null && leftAloneChecked.has(key))) continue;
       const mirrored = yield* Effect.result(mirrorThread(provider, ref, threadId, projects));
       if (mirrored._tag === "Failure") {
         problems.push(mirrored.failure.message);
         continue;
       }
       const outcome = mirrored.success;
+      if (previous === null) leftAloneChecked.add(key);
       if (outcome === "missing") continue;
       if (outcome === "continued" || outcome === "deleted") {
         // Overwriting a copy someone continued here, or bringing back one they
         // deleted, would lose their choice; the copy is left alone from now on.
+        leftAloneChecked.add(key);
         mirrors.set(threadId, null);
         yield* Effect.logInfo("boat.vm.lifecycle.mirrorLeftAlone", {
           sandboxId,
@@ -381,6 +475,52 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       mirrors.set(threadId, version);
     }
     return problems;
+  });
+
+  /** The state of a VM thread's followed copy; null for none, or one left alone here. */
+  const copyStateOf = (sandboxId: string, threadId: string) =>
+    typeof mirrorsByVm.get(sandboxId)?.get(threadId) === "string"
+      ? threadImport.copyState(boatVmThreadOriginKey(sandboxId, threadId))
+      : Effect.succeed(null);
+
+  const stop = Effect.fn("BoatVmLifecycle.stop")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+  ) {
+    // The manager lets `t3 serve` flush its database before the disk is kept.
+    const stopped = yield* Effect.result(manager.stop({ provider, ref }));
+    if (stopped._tag === "Failure") {
+      yield* Effect.logWarning("boat.vm.lifecycle.stopFailed", {
+        sandboxId: ref.sandboxId,
+        error: stopped.failure.message,
+      });
+      return "kept" satisfies LifecycleOutcome;
+    }
+    yield* Effect.logInfo("boat.vm.lifecycle.stopped", { sandboxId: ref.sandboxId });
+    return "stopped" satisfies LifecycleOutcome;
+  });
+
+  const remove = Effect.fn("BoatVmLifecycle.remove")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+    vm: { readonly running: boolean },
+  ) {
+    const sandboxId = ref.sandboxId;
+    yield* input.beforeDelete(provider, ref, vm);
+    const destroyed = yield* Effect.result(manager.destroy({ provider, ref }));
+    if (destroyed._tag === "Failure") {
+      yield* Effect.logWarning("boat.vm.lifecycle.deleteFailed", {
+        sandboxId,
+        error: destroyed.failure.message,
+      });
+      return "kept" satisfies LifecycleOutcome;
+    }
+    threadsByVm.delete(sandboxId);
+    mirrorsByVm.delete(sandboxId);
+    settledSince.delete(sandboxId);
+    launchedAt.delete(sandboxId);
+    yield* Effect.logInfo("boat.vm.lifecycle.deleted", { sandboxId });
+    return "deleted" satisfies LifecycleOutcome;
   });
 
   /** Mirrors one running VM's threads, then applies the rules; a VM that cannot be read is kept. */
@@ -407,10 +547,23 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       });
       return "kept" satisfies LifecycleOutcome;
     }
-    const { threads, departed, projects } = listed.success;
-    const archived = departed.filter((entry) => entry.state === "archived");
-    const unknown = departed.filter((entry) => entry.state === "unknown").map(({ id }) => id);
+    const { departed, projects } = listed.success;
+    const threads = listed.success.threads.filter((thread) => thread.parentThreadId === null);
+    const subagents = listed.success.threads.filter((thread) => thread.parentThreadId !== null);
+    const archived = departed.filter(
+      (entry) => entry.state === "archived" && entry.parentThreadId === null,
+    );
+    const unknown = departed
+      .filter((entry) => entry.state === "unknown" && entry.parentThreadId === null)
+      .map(({ id }) => id);
     const deleted = departed.filter((entry) => entry.state === "deleted").map(({ id }) => id);
+    // Copies of subagents made before they were skipped go like deleted threads' copies.
+    const subagentCopies = [
+      ...subagents,
+      ...departed.filter((entry) => entry.parentThreadId !== null),
+    ]
+      .map(({ id }) => id)
+      .filter((id) => mirrorsByVm.get(sandboxId)?.has(id) === true);
     threadsByVm.set(sandboxId, [
       ...threads.map((thread) => thread.id),
       ...archived.map(({ id }) => id),
@@ -422,19 +575,31 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       provider,
       ref,
       [...threads, ...archived.map(({ id, version }) => ({ id, version: version ?? "" }))],
-      deleted,
+      [...deleted, ...subagentCopies],
       projects,
     );
 
+    const settledThreads: Array<VmThread> = [];
+    for (const thread of threads) {
+      const copy = yield* copyStateOf(sandboxId, thread.id);
+      settledThreads.push({ ...thread, settled: vmThreadSettled(thread, copy) });
+    }
+    const nowMs = yield* Clock.currentTimeMillis;
     const action = decide({
-      threads,
+      threads: settledThreads,
+      subagents,
       archived: archived.map(({ id }) => id),
       unknown,
       hadThreads: asked.length > 0,
-      nowMs: yield* Clock.currentTimeMillis,
+      nowMs,
       idleMinutes,
       launchedAtMs: launchedAt.get(sandboxId),
     });
+    const allSettled =
+      unknown.length === 0 &&
+      settledThreads.length + archived.length > 0 &&
+      settledThreads.every((thread) => thread.settled);
+    if (!allSettled) settledSince.delete(sandboxId);
 
     if (action === "none") {
       if (problems.length > 0) {
@@ -446,37 +611,71 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       if (problems.length > 0) {
         yield* Effect.logWarning("boat.vm.lifecycle.stoppingBehind", { sandboxId, problems });
       }
-      // The manager lets `t3 serve` flush its database before the disk is kept.
-      const stopped = yield* Effect.result(manager.stop({ provider, ref }));
-      if (stopped._tag === "Failure") {
-        yield* Effect.logWarning("boat.vm.lifecycle.stopFailed", {
-          sandboxId,
-          error: stopped.failure.message,
-        });
-        return "kept" satisfies LifecycleOutcome;
-      }
-      yield* Effect.logInfo("boat.vm.lifecycle.stopped", { sandboxId });
-      return "stopped" satisfies LifecycleOutcome;
+      return yield* stop(provider, ref);
     }
-
     if (problems.length > 0) {
       yield* Effect.logWarning("boat.vm.lifecycle.kept", { sandboxId, problems });
       return "kept" satisfies LifecycleOutcome;
     }
-    yield* input.beforeDelete(provider, ref);
-    const destroyed = yield* Effect.result(manager.destroy({ provider, ref }));
-    if (destroyed._tag === "Failure") {
-      yield* Effect.logWarning("boat.vm.lifecycle.deleteFailed", {
-        sandboxId,
-        error: destroyed.failure.message,
-      });
+    if (action === "delete") return yield* remove(provider, ref, { running: true });
+
+    const since = settledSince.get(sandboxId) ?? nowMs;
+    if (nowMs - since >= BOAT_VM_SETTLED_DELETE_AFTER_MS) {
+      return yield* remove(provider, ref, { running: true });
+    }
+    // While the VM is stopped only its copies can change, so they must say
+    // settled too; a copy someone reopens then keeps the VM.
+    for (const threadId of [...threads.map(({ id }) => id), ...archived.map(({ id }) => id)]) {
+      const copy = yield* copyStateOf(sandboxId, threadId);
+      if (copy === null || copy.doneAtMs !== null) continue;
+      const settled = yield* Effect.result(
+        threadImport.settleCopy(boatVmThreadOriginKey(sandboxId, threadId), since),
+      );
+      if (settled._tag === "Failure") {
+        yield* Effect.logWarning("boat.vm.lifecycle.settleCopyFailed", {
+          sandboxId,
+          threadId,
+          error: settled.failure.message,
+        });
+        return "kept" satisfies LifecycleOutcome;
+      }
+    }
+    settledSince.set(sandboxId, since);
+    return yield* stop(provider, ref);
+  });
+
+  /**
+   * Deletes a stopped VM once its copies stayed settled for the grace period;
+   * a reopened copy keeps it. A VM stopped for being idle starts that period
+   * once every thread it holds has a copy settled here.
+   */
+  const applyStopped = Effect.fn("BoatVmLifecycle.applyStopped")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+  ) {
+    const sandboxId = ref.sandboxId;
+    const since = settledSince.get(sandboxId);
+    const known = threadsByVm.get(sandboxId) ?? [];
+    let everyCopySettled = known.length > 0;
+    for (const threadId of known) {
+      const copy = yield* copyStateOf(sandboxId, threadId);
+      if (copy === null) {
+        everyCopySettled = false;
+      } else if (copy.doneAtMs === null) {
+        if (since !== undefined) {
+          settledSince.delete(sandboxId);
+          yield* Effect.logInfo("boat.vm.lifecycle.reopened", { sandboxId, threadId });
+        }
+        return "kept" satisfies LifecycleOutcome;
+      }
+    }
+    const nowMs = yield* Clock.currentTimeMillis;
+    if (since === undefined) {
+      if (everyCopySettled) settledSince.set(sandboxId, nowMs);
       return "kept" satisfies LifecycleOutcome;
     }
-    threadsByVm.delete(sandboxId);
-    mirrorsByVm.delete(sandboxId);
-    launchedAt.delete(sandboxId);
-    yield* Effect.logInfo("boat.vm.lifecycle.deleted", { sandboxId });
-    return "deleted" satisfies LifecycleOutcome;
+    if (nowMs - since < BOAT_VM_SETTLED_DELETE_AFTER_MS) return "kept" satisfies LifecycleOutcome;
+    return yield* remove(provider, ref, { running: false });
   });
 
   /** Forgets VMs that are gone and saves what changed. */
@@ -487,6 +686,10 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     for (const sandboxId of mirrorsByVm.keys()) {
       if (!liveSandboxIds.has(sandboxId)) mirrorsByVm.delete(sandboxId);
     }
+    for (const sandboxId of settledSince.keys()) {
+      if (!liveSandboxIds.has(sandboxId)) settledSince.delete(sandboxId);
+    }
+    yield* publishFollowed();
     const contents = yield* encodeCurrent();
     if (contents === persisted) return;
     yield* writeFileStringAtomically({ filePath: input.statePath, contents }).pipe(
@@ -496,5 +699,5 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     persisted = contents;
   });
 
-  return { apply, save, markLaunched };
+  return { apply, applyStopped, save, markLaunched };
 });

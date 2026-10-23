@@ -118,13 +118,14 @@ import {
   useServerConfigs,
   useQuietThreadShells,
 } from "../state/entities";
+import { useBoatVmPairings, withoutShadowedBoatVmCopies } from "../state/boatVms";
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
-import { readEnvironmentScope } from "../state/session";
+import { readEnvironmentScope, useEnvironmentsWithScope } from "../state/session";
 import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
@@ -361,7 +362,13 @@ function useSidebarThreads(input: {
 }) {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadRef } =
     input;
-  const threads = useQuietThreadShells();
+  const allThreads = useQuietThreadShells();
+  const boatVmPairings = useBoatVmPairings();
+  const operableEnvironments = useEnvironmentsWithScope(
+    boatVmPairings,
+    AuthOrchestrationOperateScope,
+  );
+  const threads = withoutShadowedBoatVmCopies(allThreads, boatVmPairings, operableEnvironments);
   const routeRowThreadKey =
     routeThreadRef === null
       ? null

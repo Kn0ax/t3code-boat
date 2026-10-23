@@ -83,8 +83,29 @@ Before the rules, the pass mirrors each changed VM thread into a local `import:b
 through `ThreadImportService.mirrorThread`, which writes only new or changed messages and items. The
 state file keeps a version per mirrored thread, built from shell fields, so an unchanged thread is
 never fetched; this mirror is also the final sync before a stop or delete. A failed sync blocks a
-delete but not a stop, since a stopped VM keeps its disk. A copy that has a run of its own was
-continued locally, so it is left alone from then on, and never deleted with its VM thread.
+delete but not a stop, since a stopped VM keeps its disk. Subagent threads (a parent in their
+lineage) are not mirrored: the copy resets lineage, so each would become a top-level thread here.
+A running subagent still keeps its VM from stopping, since a delegated task can outlive its
+parent's turn.
+
+While the VM exists, its copies are followed: the lifecycle publishes their ids to
+[`FollowedThreadCopies`](../../apps/server/src/orchestration-v2/FollowedThreadCopies.ts), and
+`ThreadManagementService` rejects a `message.dispatch` to one before it commits. Without that, a send
+from any client, an older one, or an agent would start a context-handoff run here and fork the
+conversation away from the VM. The client turns the copy into a pointer instead (the copy's id
+carries the sandbox and VM thread ids, `boatVmThreadCopyOrigin`). Once boat no longer lists the VM,
+its copies drop out of the set and become ordinary threads. A copy deleted here, or one with a run
+of its own that did not fail, is left alone and never deleted with its VM thread. A send that only
+failed, such as at provider startup, does not make the copy the user's.
+
+A VM whose threads are all settled is stopped, not deleted, and deleted only after
+`BOAT_VM_SETTLED_DELETE_AFTER_MS` in that state (`settledSince` in the state file). A thread counts as
+settled when the VM says so or its copy here was settled or archived after the thread's last
+activity, so a client that cannot reach a stopped VM settles the copy instead. A stopped VM's
+threads cannot change, so the stop settles every copy first and from then on the copies alone
+decide: reopening one clears `settledSince`. Deleting a stopped VM never execs into it, since that
+could start it, so its tailnet node is not logged out; an auth-key node is ephemeral and leaves on
+its own.
 
 boat VMs are reached over Tailscale rather than boat's public port URL, so they need no loopback
 forward and every client on the tailnet can pair with them. A VM made from a named snapshot inherits

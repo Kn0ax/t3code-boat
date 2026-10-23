@@ -47,6 +47,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as FollowedThreadCopies from "./FollowedThreadCopies.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
@@ -506,6 +507,9 @@ function latestSteerableRun(
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 
+const FOLLOWED_COPY_REJECTION =
+  "This thread is a copy of a thread on a boat VM. Continue it on the VM; the copy becomes yours once the VM is deleted.";
+
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -514,6 +518,8 @@ const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  // Provided where something keeps copies that follow another environment.
+  const followedCopies = yield* Effect.serviceOption(FollowedThreadCopies.FollowedThreadCopies);
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -642,10 +648,31 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
+  // A run here would fork the conversation away from the thread it copies.
+  const assertNotFollowedCopy = (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+  ) =>
+    Option.isNone(followedCopies)
+      ? Effect.void
+      : followedCopies.value.has(command.threadId).pipe(
+          Effect.flatMap((followed) =>
+            followed
+              ? Effect.fail(
+                  new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: FOLLOWED_COPY_REJECTION,
+                  }),
+                )
+              : Effect.void,
+          ),
+        );
+
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {
       case "message.dispatch":
-        return orchestrator.getThreadRecords(command.threadId, []).pipe(
+        return assertNotFollowedCopy(command).pipe(
+          Effect.andThen(orchestrator.getThreadRecords(command.threadId, [])),
           Effect.flatMap((projection) =>
             assertProviderInstanceEnabled({
               projectId: projection.thread.projectId,

@@ -1,25 +1,37 @@
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { useAtomValue } from "@effect/atom-react";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
+  runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type { ConnectionCatalogEntry } from "@t3tools/client-runtime/connection";
 import {
+  AuthOrchestrationOperateScope,
   boatVmMatchesTailnetHostname,
+  boatVmThreadCopyOrigin,
+  boatVmThreadOriginKey,
   EnvironmentId,
   isBoatVmTailnetHostname,
+  ThreadId,
   WS_METHODS,
   type BoatVm,
   type BoatVmBringHomeResult,
   type BoatVmRepository,
+  type OrchestrationV2RunStatus,
   type RepositoryIdentity,
   type ScopedProjectRef,
+  type ScopedThreadRef,
 } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import * as Option from "effect/Option";
+import { useEffect } from "react";
 
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
+import { environmentCatalog } from "../connection/catalog";
 import { connectPairing } from "../connection/onboarding";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { inferProjectTitleFromPath } from "../lib/projectPaths";
@@ -28,11 +40,11 @@ import { boatProxyBaseUrl } from "@t3tools/shared/boatProxy";
 import { newProjectId, randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readBoatVmLaunch, startBoatVmLaunch, updateBoatVmLaunch } from "./boatVmLaunches";
-import { readProjects, waitForProject } from "./entities";
+import { readProjects, readThreadShell, waitForProject } from "./entities";
 import { environmentPresentations } from "./presentation";
 import { projectEnvironment } from "./projects";
 import { useAtomCommand } from "./use-atom-command";
-import { readPreparedConnection } from "./session";
+import { readEnvironmentScope, readPreparedConnection } from "./session";
 import { waitForAtomValue } from "./waitForAtomValue";
 
 const launchScheduler = createAtomCommandScheduler();
@@ -122,6 +134,166 @@ export function boatVmDraftLaunch(input: {
   return input.isScratch ? "scratch" : boatVmRepositoryOf(input.project.repositoryIdentity);
 }
 
+/** How a paired boat VM is named wherever its environment shows. */
+export const boatVmEnvironmentLabel = (vmLabel: string): string => `boat: ${vmLabel}`;
+
+/**
+ * What a saved environment says about being a boat VM: the VM recorded when it
+ * was paired, and its tailnet name, which names the VM for pairings older
+ * than that record.
+ */
+export interface BoatVmPairing {
+  readonly environmentId: EnvironmentId;
+  readonly recorded: {
+    readonly sandboxId: string;
+    readonly hostEnvironmentId: EnvironmentId;
+  } | null;
+  readonly hostname: string | null;
+}
+
+export function boatVmPairingOf(entry: ConnectionCatalogEntry): BoatVmPairing {
+  const profile = Option.getOrNull(entry.profile);
+  const bearer = profile?._tag === "BearerConnectionProfile" ? profile : null;
+  return {
+    environmentId: entry.target.environmentId,
+    recorded: bearer?.boatVm ?? null,
+    hostname:
+      bearer === null ? null : (URL.parse(bearer.httpBaseUrl)?.hostname.split(".")[0] ?? null),
+  };
+}
+
+/** Every saved environment's pairing, read from the saved connections alone. */
+export function useBoatVmPairings(): ReadonlyArray<BoatVmPairing> {
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  return [...catalog.entries.values()].map(boatVmPairingOf);
+}
+
+/**
+ * Where settling or archiving a boat VM's thread goes while this client cannot
+ * change threads on the VM, as while it is stopped: the thread's copy on the
+ * environment that holds the boat key, when that copy is listed here. The
+ * lifecycle there counts the copy's state as the VM thread's.
+ */
+export function boatVmCopyTarget(input: {
+  readonly target: ScopedThreadRef;
+  readonly canOperate: boolean;
+  readonly pairings: ReadonlyArray<BoatVmPairing>;
+  readonly hasThread: (ref: ScopedThreadRef) => boolean;
+}): ScopedThreadRef {
+  if (input.canOperate) return input.target;
+  const vm = input.pairings.find(
+    (pairing) => pairing.environmentId === input.target.environmentId,
+  )?.recorded;
+  if (vm === null || vm === undefined) return input.target;
+  const copy = scopeThreadRef(
+    vm.hostEnvironmentId,
+    ThreadId.make(`import:${boatVmThreadOriginKey(vm.sandboxId, input.target.threadId)}`),
+  );
+  return input.hasThread(copy) ? copy : input.target;
+}
+
+/** boatVmCopyTarget for a thread action, read from the current state. */
+export const readBoatVmCopyTarget = (target: ScopedThreadRef): ScopedThreadRef =>
+  boatVmCopyTarget({
+    target,
+    canOperate: readEnvironmentScope(target.environmentId, AuthOrchestrationOperateScope),
+    pairings: [...appAtomRegistry.get(environmentCatalog.catalogValueAtom).entries.values()].map(
+      boatVmPairingOf,
+    ),
+    hasThread: (ref) => readThreadShell(ref) !== null,
+  });
+
+const pairingRunsVm = (pairing: BoatVmPairing, sandboxId: string) =>
+  pairing.recorded !== null
+    ? pairing.recorded.sandboxId === sandboxId
+    : pairing.hostname !== null && boatVmMatchesTailnetHostname(sandboxId, pairing.hostname);
+
+/** The saved environment that runs boat VM `sandboxId`, if this client paired it. */
+const boatVmEnvironmentOf = (
+  pairings: ReadonlyArray<BoatVmPairing>,
+  sandboxId: string,
+): EnvironmentId | null =>
+  pairings.find((pairing) => pairingRunsVm(pairing, sandboxId))?.environmentId ?? null;
+
+/**
+ * A copy carries no runs, so one with a run that did not fail was continued
+ * here and is a conversation of its own. The server checks every run; a client
+ * only has the latest, so a good run followed by a failed one reads as not
+ * continued here.
+ */
+export const boatVmCopyContinuedHere = (
+  latestRun: { readonly status: OrchestrationV2RunStatus } | null,
+): boolean => latestRun !== null && latestRun.status !== "failed";
+
+/**
+ * Shows one row for a VM thread that this client lists along with the
+ * manager's copy of it: the VM's thread while this client can change threads
+ * on the VM, else the copy, which stays usable while the VM is stopped. Both
+ * show once the copy was continued here.
+ */
+export function withoutShadowedBoatVmCopies<
+  T extends {
+    readonly environmentId: EnvironmentId;
+    readonly id: string;
+    readonly latestRun: { readonly status: OrchestrationV2RunStatus } | null;
+  },
+>(
+  threads: ReadonlyArray<T>,
+  pairings: ReadonlyArray<BoatVmPairing>,
+  operable: ReadonlySet<EnvironmentId>,
+): ReadonlyArray<T> {
+  if (!threads.some((thread) => boatVmThreadCopyOrigin(thread.id) !== null)) return threads;
+  const keyOf = (environmentId: EnvironmentId, threadId: string) => `${environmentId} ${threadId}`;
+  const listed = new Set(threads.map((thread) => keyOf(thread.environmentId, thread.id)));
+  const hidden = new Set<string>();
+  for (const thread of threads) {
+    const origin = boatVmThreadCopyOrigin(thread.id);
+    if (origin === null || boatVmCopyContinuedHere(thread.latestRun)) continue;
+    const environmentId = boatVmEnvironmentOf(pairings, origin.sandboxId);
+    if (environmentId === null || !listed.has(keyOf(environmentId, origin.threadId))) continue;
+    hidden.add(
+      operable.has(environmentId)
+        ? keyOf(thread.environmentId, thread.id)
+        : keyOf(environmentId, origin.threadId),
+    );
+  }
+  return hidden.size === 0
+    ? threads
+    : threads.filter((thread) => !hidden.has(keyOf(thread.environmentId, thread.id)));
+}
+
+/**
+ * Where a send on a boat VM thread's copy goes. While boat still has the VM,
+ * the conversation goes on in the VM's thread: open it when the VM runs and
+ * this client paired it, else start or pair the VM first. A copy whose VM is
+ * gone, or that was continued here, is an ordinary thread (null).
+ */
+export function boatVmCopyRoute(input: {
+  readonly copyThreadId: string;
+  readonly continuedHere: boolean;
+  /** The VMs of the environment holding the copy; undefined until they load. */
+  readonly vms: ReadonlyArray<BoatVm> | undefined;
+  readonly pairings: ReadonlyArray<BoatVmPairing>;
+}): {
+  readonly vm: BoatVm;
+  readonly threadId: ThreadId;
+  /** The VM's environment to open the thread in; null when the VM must start or pair first. */
+  readonly environmentId: EnvironmentId | null;
+} | null {
+  const origin = boatVmThreadCopyOrigin(input.copyThreadId);
+  if (origin === null || input.continuedHere) return null;
+  const vm = input.vms?.find(
+    (candidate) => candidate.sandboxId === origin.sandboxId && candidate.status !== "destroyed",
+  );
+  if (vm === undefined) return null;
+  const environmentId = boatVmEnvironmentOf(input.pairings, origin.sandboxId);
+  return {
+    vm,
+    threadId: ThreadId.make(origin.threadId),
+    environmentId: vm.status === "running" ? environmentId : null,
+  };
+}
+
 /** The VM a paired machine runs on: the one recorded at pairing, else the one its tailnet name names. */
 export const pairedBoatVm = <Vm extends { readonly sandboxId: string }>(
   vms: ReadonlyArray<Vm>,
@@ -133,6 +305,40 @@ export const pairedBoatVm = <Vm extends { readonly sandboxId: string }>(
     : hostname === null
       ? undefined
       : vms.find((vm) => boatVmMatchesTailnetHostname(vm.sandboxId, hostname));
+
+/**
+ * The saved environments that are one of `vms` but not yet named after it,
+ * such as a VM paired before pairing named it, with the label each should have.
+ */
+export function boatVmLabelUpdates(
+  entries: Iterable<ConnectionCatalogEntry>,
+  vms: ReadonlyArray<BoatVm>,
+): ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly label: string }> {
+  const live = vms.filter((vm) => vm.status !== "destroyed");
+  return [...entries].flatMap((entry) => {
+    const pairing = boatVmPairingOf(entry);
+    const vm = pairedBoatVm(live, pairing.recorded?.sandboxId ?? null, pairing.hostname);
+    if (vm === undefined) return [];
+    const label = boatVmEnvironmentLabel(vm.label);
+    return entry.target.label === label ? [] : [{ environmentId: pairing.environmentId, label }];
+  });
+}
+
+/**
+ * Names saved VM environments after their VM once the managing host's VM list
+ * has loaded; it fetches nothing itself.
+ */
+export function useBoatVmEnvironmentLabels(vms: ReadonlyArray<BoatVm> | undefined): void {
+  useEffect(() => {
+    if (vms === undefined) return;
+    const { entries } = appAtomRegistry.get(environmentCatalog.catalogValueAtom);
+    for (const update of boatVmLabelUpdates(entries.values(), vms)) {
+      void runAtomCommand(appAtomRegistry, environmentCatalog.setLabel, update, {
+        reportFailure: false,
+      });
+    }
+  }, [vms]);
+}
 
 /**
  * "Run on" with the boat VMs folded in. A paired machine that is one of the
@@ -175,14 +381,17 @@ export function boatVmRunOnOptions(
     }
     if (vm.status !== "running") return [];
     paired.add(vm.sandboxId);
-    return [{ ...environment, label: `boat: ${vm.label}` }];
+    return [{ ...environment, label: boatVmEnvironmentLabel(vm.label) }];
   });
   return [
     ...machines,
     ...live
       .filter((vm) => !paired.has(vm.sandboxId))
       .map((vm) =>
-        entry(vm.sandboxId, `boat: ${vm.label}${vm.status === "running" ? "" : " (stopped)"}`),
+        entry(
+          vm.sandboxId,
+          `${boatVmEnvironmentLabel(vm.label)}${vm.status === "running" ? "" : " (stopped)"}`,
+        ),
       ),
     newBoatVmEntry(newVmDisabledReason),
   ];
@@ -261,6 +470,8 @@ export function useLaunchBoatVm() {
     }
     const paired = await pair({
       boatVm: { sandboxId: vm.sandboxId, hostEnvironmentId: input.hostEnvironmentId },
+      // The VM's own name is its tailnet host name.
+      label: boatVmEnvironmentLabel(vm.label),
       host:
         vm.boatProxy === undefined
           ? vm.httpBaseUrl

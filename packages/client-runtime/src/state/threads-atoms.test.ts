@@ -136,6 +136,7 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
     retryNow: () => Effect.void,
     setEnabled: () => Effect.die("Unexpected environment toggle"),
     setCompatibility: () => Effect.die("Unexpected compatibility update"),
+    setLabel: () => Effect.die("Unexpected label update"),
     state: () => SubscriptionRef.get(supervisor.state),
     stateChanges: () => SubscriptionRef.changes(supervisor.state),
     run: (_environmentId, effect) =>

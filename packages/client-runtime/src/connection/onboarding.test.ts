@@ -462,6 +462,19 @@ describe("connection onboarding", () => {
     }),
   );
 
+  it.effect("labels a paired environment as asked instead of by its own name", () =>
+    Effect.gen(function* () {
+      const registration = yield* preparePairingRegistration({
+        host: "remote.example.test",
+        pairingCode: "pairing-token",
+        label: "boat: acme/app",
+      }).pipe(Effect.provide(Layer.mergeAll(layerClientPresentation, layerPairingHttp([]))));
+
+      expect(registration.target.label).toBe("boat: acme/app");
+      expect(registration.profile.label).toBe("boat: acme/app");
+    }),
+  );
+
   it.effect("refuses to add a route that reaches a different machine, keeping the code", () =>
     Effect.gen(function* () {
       const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];

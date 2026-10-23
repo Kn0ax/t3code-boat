@@ -43,6 +43,28 @@ export const boatVmMatchesTailnetHostname = (sandboxId: string, hostname: string
   return name === boatVmTailnetHostname(sandboxId) || name.endsWith(`-${snapshotId}`);
 };
 
+/**
+ * The origin key of the managing environment's copy of thread `threadId` on VM
+ * `sandboxId`. The copy's thread id is this key after `import:`.
+ */
+export const boatVmThreadOriginKey = (sandboxId: string, threadId: string): string =>
+  `boat-vm:${sandboxId}:${threadId}`;
+
+/**
+ * The VM thread a copy follows, read from the copy's thread id; null for any
+ * other thread. Sandbox IDs hold no colon, so the rest is the VM's thread id.
+ */
+export const boatVmThreadCopyOrigin = (
+  copyThreadId: string,
+): { readonly sandboxId: string; readonly threadId: string } | null => {
+  const prefix = "import:boat-vm:";
+  if (!copyThreadId.startsWith(prefix)) return null;
+  const rest = copyThreadId.slice(prefix.length);
+  const colon = rest.indexOf(":");
+  if (colon <= 0 || colon === rest.length - 1) return null;
+  return { sandboxId: rest.slice(0, colon), threadId: rest.slice(colon + 1) };
+};
+
 /** A tailnet name in either scheme above; boat sandbox IDs look like `bx_<id>`. */
 export const isBoatVmTailnetHostname = (hostname: string): boolean =>
   /^t3-vm-[a-z0-9]+$|-bx-[a-z0-9]+$/.test(hostname.toLowerCase());

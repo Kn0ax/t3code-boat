@@ -61,6 +61,26 @@ export function entryWithRoutes(
   };
 }
 
+/** The entry's routes with `label` on every paired-address route and its profile. */
+export function relabeledRoutes(
+  entry: ConnectionCatalogEntry,
+  label: string,
+): ReadonlyArray<ConnectionRoute> {
+  return connectionRoutes(entry).map((route) => {
+    if (route.target._tag !== "BearerConnectionTarget") return route;
+    const { _tag: _target, ...target } = route.target;
+    const profile = Option.getOrNull(route.profile);
+    if (profile?._tag !== "BearerConnectionProfile") {
+      return { target: new BearerConnectionTarget({ ...target, label }), profile: route.profile };
+    }
+    const { _tag: _profile, ...fields } = profile;
+    return {
+      target: new BearerConnectionTarget({ ...target, label }),
+      profile: Option.some(new BearerConnectionProfile({ ...fields, label })),
+    };
+  });
+}
+
 export function routeEntry(
   entry: ConnectionCatalogEntry,
   route: ConnectionRoute,
