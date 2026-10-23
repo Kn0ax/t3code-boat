@@ -346,6 +346,7 @@ describe.skipIf(!canRunLifecycle)("sandbox bootstrap scripts in a real shell", (
       if (listening) {
         return child;
       }
+      // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- polls a real subprocess for its port; nothing signals when it listens
       await NodeTimersPromises.setTimeout(50);
     }
     throw new Error(`nothing started listening on ${port}`);
@@ -571,6 +572,7 @@ describe.skipIf(!canRunLifecycle)("sandbox bootstrap scripts in a real shell", (
 
     assert.equal(result.exitCode, 1);
     assert.include(result.stderr, `T3 server did not become ready on port ${port}`);
+    // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- gives the real server process time to exit after the script kills it
     await NodeTimersPromises.setTimeout(200);
     assert.isFalse(child.pid !== undefined && isAlive(child.pid));
     assert.isNull(readState("pid"));

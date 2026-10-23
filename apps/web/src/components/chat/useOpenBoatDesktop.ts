@@ -97,7 +97,10 @@ export function useOpenBoatDesktop(threadRef: ScopedThreadRef | null): (() => vo
         if (opened._tag === "Success" || isAtomCommandInterrupted(opened)) return;
       }
       const api = readLocalApi();
-      if (!api) throw new Error("Link opening is unavailable.");
+      if (!api) {
+        fail("Link opening is unavailable.");
+        return;
+      }
       await api.shell.openExternal(url);
     } catch (error) {
       fail(error instanceof Error ? error.message : "The request failed.");

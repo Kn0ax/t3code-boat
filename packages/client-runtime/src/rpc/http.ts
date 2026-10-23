@@ -31,7 +31,7 @@ export class RemoteEnvironmentAuthFetchError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
-export class RemoteEnvironmentAuthInvalidJsonError extends Data.TaggedError(
+class RemoteEnvironmentAuthInvalidJsonError extends Data.TaggedError(
   "RemoteEnvironmentAuthInvalidJsonError",
 )<{
   readonly message: string;

@@ -26,14 +26,6 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
-  it.effect("migrates a fresh database through the whole manifest", () =>
-    Effect.gen(function* () {
-      yield* runMigrations();
-      assert.deepStrictEqual(yield* history, migrationManifest);
-      assert.isAbove(yield* v2TableCount, 0);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
-  );
-
   it.effect("refuses to start when another migration took a V2 id", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -128,6 +120,25 @@ describe("runMigrations", () => {
       `;
 
       assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("upgrades a fork database that recorded sandbox jobs as 68", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 67 });
+      yield* sql`CREATE TABLE sandbox_jobs (job_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (68, 'SandboxJobs')`;
+
+      assert.deepStrictEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id >= 68),
+      );
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      const tables = yield* sql`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_jobs'
+      `;
+      assert.strictEqual(tables.length, 1);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });

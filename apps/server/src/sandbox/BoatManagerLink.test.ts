@@ -96,6 +96,11 @@ const startFakeManager = Effect.acquireRelease(
         if (manager.revoked || request.headers.authorization !== `Bearer ${MANAGER_TOKEN}`) {
           return json(401, {});
         }
+        // The MCP client ends its session with a bodiless DELETE.
+        if (request.method === "DELETE") {
+          response.writeHead(204).end();
+          return;
+        }
         const message = JSON.parse(body);
         if (message.method === "initialize") {
           return json(

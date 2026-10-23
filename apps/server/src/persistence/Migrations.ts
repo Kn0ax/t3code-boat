@@ -70,9 +70,9 @@ import Migration0064 from "./Migrations/064_CanonicalizeThreadPullRequestLinks.t
 import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
 import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
-import Migration0068 from "./Migrations/068_SandboxJobs.ts";
+import Migration0068 from "./Migrations/068_ShellStopRequestIndex.ts";
 
-export const migrationEntries = [
+const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -141,7 +141,7 @@ export const migrationEntries = [
   [65, "CodexUsageNativeTurnIndex", Migration0065],
   [66, "RepairClientSettlementTimestamps", Migration0066],
   [67, "WebhookDedupe", Migration0067],
-  [68, "SandboxJobs", Migration0068],
+  [68, "ShellStopRequestIndex", Migration0068],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -195,6 +195,20 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
   });
 });
 
+/**
+ * Earlier fork builds recorded sandbox jobs as migration 68, which upstream now
+ * owns. Drop that record so upstream's 68 runs; the sandbox_jobs table stays
+ * and SandboxJobStore tracks it in its own migration table.
+ */
+const forgetForkSandboxJobsMigration = Effect.fn("forgetForkSandboxJobsMigration")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (tables.length === 0) return;
+  yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 68 AND name = 'SandboxJobs'`;
+});
+
 const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
@@ -206,6 +220,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
 }: RunMigrationsOptions = {}) {
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
+  yield* forgetForkSandboxJobsMigration();
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
