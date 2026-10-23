@@ -1153,6 +1153,22 @@ describe("ClaudeAdapterV2 resumeThread", () => {
           },
         });
         assert.equal(missing.nativeThreadRef?.nativeId, "native-thread-missing");
+
+        // A run used this id, but the CLI exited before it wrote any transcript.
+        const unsaved = yield* Effect.flip(
+          runtime.resumeThread({
+            providerThread: {
+              ...providerThread,
+              nativeThreadRef: {
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeId: "native-thread-missing",
+                strength: "strong",
+              },
+              lastRunOrdinal: 1,
+            },
+          }),
+        );
+        assert.equal(unsaved._tag, "ProviderAdapterResumeThreadError");
       }),
     ).pipe(
       Effect.provide(

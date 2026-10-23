@@ -9998,11 +9998,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         yield* Effect.addFinalizer(() => closeSession());
 
         // A CLI stopped before it saved the first prompt can leave a transcript
-        // with only metadata lines. Claude can neither resume that id nor
-        // create it again, so resumeThread fails and the caller binds a fresh
-        // native session with a context handoff.
+        // with only metadata lines, or none at all. Claude can neither resume
+        // that id nor create it again, so resumeThread fails and the caller
+        // binds a fresh native session with a context handoff.
         const hasEmptyClaudeTranscript = Effect.fn("ClaudeAdapterV2.hasEmptyClaudeTranscript")(
-          function* (nativeThreadId: string) {
+          function* (nativeThreadId: string, missingIsEmpty: boolean) {
             const configuredDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
             const projectsDir = path.join(
               configuredDir.length > 0
@@ -10034,7 +10034,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
               found = true;
             }
-            return found;
+            return found || missingIsEmpty;
           },
         );
 
@@ -10121,9 +10121,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 // A live process holds the conversation even before saving it.
                 (yield* Ref.get(queryContext))?.nativeThreadId !== nativeThreadId &&
                 // An unreadable transcript leaves the resume to the CLI, as before.
-                (yield* hasEmptyClaudeTranscript(nativeThreadId).pipe(
-                  Effect.orElseSucceed(() => false),
-                ))
+                // A missing one only counts once a run started on this id; a
+                // fresh id (new thread, rollback to start) has none yet.
+                (yield* hasEmptyClaudeTranscript(
+                  nativeThreadId,
+                  threadInput.providerThread.lastRunOrdinal !== null,
+                ).pipe(Effect.orElseSucceed(() => false)))
               ) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
