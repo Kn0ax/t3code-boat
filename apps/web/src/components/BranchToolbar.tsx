@@ -26,7 +26,11 @@ import {
 } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
-import { EnvironmentMachineIcon, EnvironmentOptionIcon } from "./EnvironmentMachineIcon";
+import {
+  BoatVmIcon,
+  EnvironmentMachineIcon,
+  EnvironmentOptionIcon,
+} from "./EnvironmentMachineIcon";
 import { useRefreshBoatVmsOnOpen } from "../state/boatVms";
 import { useProject, useThreadShellsForProjectRefs } from "../state/entities";
 import {
@@ -280,6 +284,38 @@ const RunContextSelector = memo(function RunContextSelector({
     </>
   );
 
+  const runOnValue = autoEnvironmentLabel ? "auto" : environmentId;
+  const onRunOnChange = (value: string) =>
+    value === "auto" ? onAutoEnvironment?.() : onEnvironmentChange?.(value as EnvironmentId);
+  const machineEnvironments =
+    availableEnvironments?.filter((env) => env.boatVmNote === undefined) ?? [];
+  const boatVmEnvironments =
+    availableEnvironments?.filter((env) => env.boatVmNote !== undefined) ?? [];
+  const renderEnvironmentItem = (env: EnvironmentOption) => (
+    <MenuRadioItem
+      key={env.environmentId}
+      disabled={
+        envLocked ||
+        (!onEnvironmentChange && env.environmentId !== environmentId) ||
+        env.disabledReason !== undefined
+      }
+      value={env.environmentId}
+      closeOnClick
+    >
+      <span className="flex min-w-0 flex-col">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <EnvironmentOptionIcon option={env} className="size-3" />
+          <span className="min-w-0 truncate">{env.label}</span>
+        </span>
+        {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
+          <span className="text-muted-foreground text-xs">
+            {env.disabledReason ?? env.boatVmNote}
+          </span>
+        ) : null}
+      </span>
+    </MenuRadioItem>
+  );
+
   if (isLocked) {
     return (
       <span
@@ -337,14 +373,7 @@ const RunContextSelector = memo(function RunContextSelector({
           <>
             <MenuGroup>
               <MenuGroupLabel>Run on</MenuGroupLabel>
-              <MenuRadioGroup
-                value={autoEnvironmentLabel ? "auto" : environmentId}
-                onValueChange={(value) =>
-                  value === "auto"
-                    ? onAutoEnvironment?.()
-                    : onEnvironmentChange?.(value as EnvironmentId)
-                }
-              >
+              <MenuRadioGroup value={runOnValue} onValueChange={onRunOnChange}>
                 {onAutoEnvironment && (
                   <MenuRadioItem
                     value="auto"
@@ -362,31 +391,23 @@ const RunContextSelector = memo(function RunContextSelector({
                     </span>
                   </MenuRadioItem>
                 )}
-                {availableEnvironments.map((env) => (
-                  <MenuRadioItem
-                    key={env.environmentId}
-                    disabled={
-                      envLocked ||
-                      (!onEnvironmentChange && env.environmentId !== environmentId) ||
-                      env.disabledReason !== undefined
-                    }
-                    value={env.environmentId}
-                    closeOnClick
-                  >
-                    <span className="flex min-w-0 flex-col">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <EnvironmentOptionIcon option={env} className="size-3" />
-                        <span className="min-w-0 truncate">{env.label}</span>
-                      </span>
-                      {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
-                        <span className="text-muted-foreground text-xs">
-                          {env.disabledReason ?? env.boatVmNote}
-                        </span>
-                      ) : null}
-                    </span>
-                  </MenuRadioItem>
-                ))}
+                {machineEnvironments.map(renderEnvironmentItem)}
               </MenuRadioGroup>
+              {boatVmEnvironments.length > 0 ? (
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <BoatVmIcon aria-hidden="true" className="size-3" />
+                      <span className="min-w-0 truncate">Boat VMs</span>
+                    </span>
+                  </MenuSubTrigger>
+                  <MenuSubPopup {...(!isPanel ? composerFloatingLayerProps : {})}>
+                    <MenuRadioGroup value={runOnValue} onValueChange={onRunOnChange}>
+                      {boatVmEnvironments.map(renderEnvironmentItem)}
+                    </MenuRadioGroup>
+                  </MenuSubPopup>
+                </MenuSub>
+              ) : null}
               {addTargets.length > 0 ? (
                 <MenuSub>
                   <MenuSubTrigger>

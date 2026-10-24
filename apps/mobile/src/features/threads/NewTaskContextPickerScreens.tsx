@@ -336,6 +336,34 @@ function BoatVmPickerRow(props: {
   );
 }
 
+/** Opens the boat VMs: the existing ones and "New boat VM". */
+function BoatVmsRow(props: { onPress: () => void }) {
+  if (Platform.OS === "android") {
+    return (
+      <NavigationRow
+        className="bg-grouped-card"
+        title="Boat VMs"
+        leading={<BoatVmSymbol size={24} tintColorClassName="accent-icon-muted" />}
+        onPress={props.onPress}
+      />
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Boat VMs"
+      onPress={props.onPress}
+      className="min-h-14 flex-row items-center gap-3 bg-grouped-card px-4 py-3 active:bg-subtle"
+    >
+      <BoatVmSymbol size={20} tintColorClassName="accent-icon-muted" />
+      <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground" numberOfLines={1}>
+        Boat VMs
+      </Text>
+      <SymbolView name="chevron.right" size={14} tintColorClassName="accent-chevron" />
+    </Pressable>
+  );
+}
+
 function PickerSurface(props: { readonly children: ReactNode }) {
   return (
     <View
@@ -364,6 +392,13 @@ export function NewTaskEnvironmentPickerRouteScreen() {
     sizingEnvironmentId === null || flow.boatVmDefaultSize === null
       ? null
       : boatVmSizeRows(flow.boatVmDefaultSize);
+  // Boat VMs sit one level down, behind their own row, like the sizes above.
+  const [showingBoatVms, setShowingBoatVms] = useState(false);
+  const boatVmEnvironments = flow.environments.filter((env) => env.boatVmRow !== undefined);
+  const shownEnvironments = showingBoatVms
+    ? boatVmEnvironments
+    : flow.environments.filter((env) => env.boatVmRow === undefined);
+  const showBoatVmsRow = !showingBoatVms && boatVmEnvironments.length > 0;
   return (
     <View className="flex-1 bg-sheet" collapsable={false}>
       <NativeStackScreenOptions
@@ -376,7 +411,13 @@ export function NewTaskEnvironmentPickerRouteScreen() {
         <AndroidScreenHeader
           title="Environment"
           hideBottomBorder
-          onBack={() => (sizeRows === null ? navigation.goBack() : setSizingEnvironmentId(null))}
+          onBack={() =>
+            sizeRows !== null
+              ? setSizingEnvironmentId(null)
+              : showingBoatVms
+                ? setShowingBoatVms(false)
+                : navigation.goBack()
+          }
         />
       ) : null}
       <ScreenContent>
@@ -407,14 +448,14 @@ export function NewTaskEnvironmentPickerRouteScreen() {
                 />
               ))}
             {sizeRows === null &&
-              flow.environments.map((environment, index) =>
+              shownEnvironments.map((environment, index) =>
                 environment.boatVm !== undefined && environment.boatVmRow !== undefined ? (
                   <BoatVmPickerRow
                     key={String(environment.environmentId)}
                     row={environment.boatVmRow}
                     disabledReason={environment.disabledReason}
                     disabled={flow.switchingToEnvironmentId !== null}
-                    isLast={index === flow.environments.length - 1}
+                    isLast={index === shownEnvironments.length - 1 && !showBoatVmsRow}
                     onPress={() => {
                       void Haptics.selectionAsync();
                       if (
@@ -433,7 +474,7 @@ export function NewTaskEnvironmentPickerRouteScreen() {
                   <EnvironmentPickerRow
                     key={String(environment.environmentId)}
                     environmentId={environment.environmentId}
-                    isLast={index === flow.environments.length - 1}
+                    isLast={index === shownEnvironments.length - 1 && !showBoatVmsRow}
                     disabled={flow.switchingToEnvironmentId !== null}
                     onPress={() => {
                       void Haptics.selectionAsync();
@@ -447,6 +488,7 @@ export function NewTaskEnvironmentPickerRouteScreen() {
                   />
                 ),
               )}
+            {showBoatVmsRow ? <BoatVmsRow onPress={() => setShowingBoatVms(true)} /> : null}
           </PickerSurface>
         </ScrollView>
       </ScreenContent>

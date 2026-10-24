@@ -54,6 +54,31 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
     availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
   const refreshBoatVms = useRefreshBoatVmsOnOpen(availableEnvironments);
 
+  const machineEnvironments = availableEnvironments.filter((env) => env.boatVmNote === undefined);
+  const boatVmEnvironments = availableEnvironments.filter((env) => env.boatVmNote !== undefined);
+  const renderEnvironmentItem = (env: EnvironmentOption) => (
+    <SelectItem
+      key={env.environmentId}
+      value={environmentValue(env.environmentId)}
+      disabled={
+        (onEnvironmentChange === undefined && env.environmentId !== environmentId) ||
+        env.disabledReason !== undefined
+      }
+    >
+      <span className="flex flex-col">
+        <span className="inline-flex items-center gap-1.5">
+          <EnvironmentOptionIcon option={env} className="size-3" />
+          {env.label}
+        </span>
+        {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
+          <span className="text-muted-foreground text-xs">
+            {env.disabledReason ?? env.boatVmNote}
+          </span>
+        ) : null}
+      </span>
+    </SelectItem>
+  );
+
   const environmentItems = [
     ...(onAutoEnvironment
       ? [{ value: AUTO_VALUE, label: autoEnvironmentLabel ?? "Auto balance" }]
@@ -146,37 +171,22 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
               </span>
             </SelectItem>
           )}
-          {availableEnvironments.map((env) => (
-            <SelectItem
-              key={env.environmentId}
-              value={environmentValue(env.environmentId)}
-              disabled={
-                (onEnvironmentChange === undefined && env.environmentId !== environmentId) ||
-                env.disabledReason !== undefined
-              }
-            >
-              <span className="flex flex-col">
-                <span className="inline-flex items-center gap-1.5">
-                  <EnvironmentOptionIcon option={env} className="size-3" />
-                  {env.label}
-                </span>
-                {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
-                  <span className="text-muted-foreground text-xs">
-                    {env.disabledReason ?? env.boatVmNote}
-                  </span>
-                ) : null}
-              </span>
-            </SelectItem>
-          ))}
-          {onAddToMachine ? (
-            <SelectItem value={ADD_MACHINE_VALUE}>
-              <span className={ADD_TO_MACHINE_LABEL_CLASS}>
-                <PlusIcon aria-hidden="true" className="size-3" />
-                Add to another machine
-              </span>
-            </SelectItem>
-          ) : null}
+          {machineEnvironments.map(renderEnvironmentItem)}
         </SelectGroup>
+        {boatVmEnvironments.length > 0 ? (
+          <SelectGroup>
+            <SelectGroupLabel>Boat VMs</SelectGroupLabel>
+            {boatVmEnvironments.map(renderEnvironmentItem)}
+          </SelectGroup>
+        ) : null}
+        {onAddToMachine ? (
+          <SelectItem value={ADD_MACHINE_VALUE}>
+            <span className={ADD_TO_MACHINE_LABEL_CLASS}>
+              <PlusIcon aria-hidden="true" className="size-3" />
+              Add to another machine
+            </span>
+          </SelectItem>
+        ) : null}
       </SelectPopup>
     </Select>
   );

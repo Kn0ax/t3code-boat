@@ -40,7 +40,7 @@ function MacStudioIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function BoatVmIcon(props: SVGProps<SVGSVGElement>) {
+export function BoatVmIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
