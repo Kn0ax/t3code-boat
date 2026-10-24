@@ -5,11 +5,8 @@ import { CloudIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
-import {
-  boatVmLaunchBanner,
-  updateBoatVmLaunch,
-  useBoatVmLaunchStore,
-} from "~/state/boatVmLaunches";
+import { boatVmLaunchBanner } from "@t3tools/client-runtime/boat-vms";
+import { updateBoatVmLaunch, useBoatVmLaunchStore } from "~/state/boatVmLaunches";
 import { boatVmEnvironment } from "~/state/boatVms";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";

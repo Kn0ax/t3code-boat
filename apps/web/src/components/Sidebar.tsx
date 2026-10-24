@@ -118,7 +118,8 @@ import {
   useServerConfigs,
   useQuietThreadShells,
 } from "../state/entities";
-import { useBoatVmPairings, withoutShadowedBoatVmCopies } from "../state/boatVms";
+import { withoutShadowedBoatVmCopies } from "@t3tools/client-runtime/boat-vms";
+import { useBoatVmPairings } from "../state/boatVms";
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";

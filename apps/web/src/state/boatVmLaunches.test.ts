@@ -1,13 +1,8 @@
-import { EnvironmentId, type BoatVmLaunchSnapshot } from "@t3tools/contracts";
+import type { BoatVmLaunchEntry } from "@t3tools/client-runtime/boat-vms";
+import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  boatVmLaunchBanner,
-  readBoatVmLaunch,
-  startBoatVmLaunch,
-  updateBoatVmLaunch,
-  type BoatVmLaunchEntry,
-} from "./boatVmLaunches";
+import { readBoatVmLaunch, startBoatVmLaunch, updateBoatVmLaunch } from "./boatVmLaunches";
 
 const entry = (overrides: Partial<BoatVmLaunchEntry> = {}): BoatVmLaunchEntry => ({
   launchId: "launch-1",
@@ -16,54 +11,6 @@ const entry = (overrides: Partial<BoatVmLaunchEntry> = {}): BoatVmLaunchEntry =>
   newVm: true,
   phase: "launching",
   ...overrides,
-});
-
-const snapshot = (overrides: Partial<BoatVmLaunchSnapshot> = {}): BoatVmLaunchSnapshot => ({
-  launchId: "launch-1",
-  repositoryName: "ts-rust",
-  stage: "installing",
-  status: "running",
-  ...overrides,
-});
-
-describe("boatVmLaunchBanner", () => {
-  it("shows the stage of its own launch, not another one's", () => {
-    const banner = boatVmLaunchBanner(entry(), [
-      snapshot({ launchId: "other", stage: "syncing" }),
-      snapshot({ stage: "creating", detail: "t3-acme-ts-rust" }),
-    ]);
-    expect(banner).toEqual({
-      title: "Starting a new boat VM for ts-rust",
-      description: "Creating the VM from t3-acme-ts-rust",
-      failed: false,
-      cancellable: true,
-    });
-  });
-
-  it("starts from the first stage before the server reports one", () => {
-    expect(boatVmLaunchBanner(entry({ newVm: false }), []).description).toBe("Resuming the VM");
-  });
-
-  it("connects after the launch returns and cannot be cancelled then", () => {
-    const banner = boatVmLaunchBanner(entry({ phase: "connecting" }), [snapshot()]);
-    expect(banner.description).toBe("Connecting to the VM");
-    expect(banner.cancellable).toBe(false);
-  });
-
-  it("shows a failure with its error", () => {
-    const banner = boatVmLaunchBanner(entry({ phase: "failed", error: "No Boat snapshot." }), []);
-    expect(banner).toMatchObject({ failed: true, description: "No Boat snapshot." });
-  });
-
-  it("names no repository for a launch without a project", () => {
-    const banner = boatVmLaunchBanner(entry({ repositoryName: null }), [
-      snapshot({ stage: "preparing" }),
-    ]);
-    expect(banner).toMatchObject({
-      title: "Starting a new boat VM",
-      description: "Preparing workspace",
-    });
-  });
 });
 
 describe("updateBoatVmLaunch", () => {

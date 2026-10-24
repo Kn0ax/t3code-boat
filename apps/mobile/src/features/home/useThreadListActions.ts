@@ -14,6 +14,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { refreshArchivedThreadsForEnvironment } from "../archive/useArchivedThreadSnapshots";
 import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { readBoatVmCopyThread } from "../../state/boatVms";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
@@ -129,9 +130,11 @@ function useThreadActionExecutor(
 
   const executeAction = async (
     action: ThreadListAction,
-    thread: EnvironmentThreadShell,
+    requested: EnvironmentThreadShell,
     onStarted?: () => void,
   ) => {
+    // A stopped boat VM's thread is settled, archived or deleted through its copy.
+    const thread = readBoatVmCopyThread(requested);
     if (!checkThreadOperationPermission(thread, actionFailureTitle(action))) return false;
     const key = scopedThreadKey(thread.environmentId, thread.id);
     if (inFlightThreadKeys.current.has(key)) {

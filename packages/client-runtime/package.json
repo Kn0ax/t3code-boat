@@ -442,6 +442,14 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./boat-vms": {
+      "types": "./src/boatVms.ts",
+      "default": "./src/boatVms.ts"
+    },
+    "./state/boat-vms": {
+      "types": "./src/state/boatVms.ts",
+      "default": "./src/state/boatVms.ts"
     }
   },
   "scripts": {

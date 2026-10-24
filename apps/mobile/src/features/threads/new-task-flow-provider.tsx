@@ -6,7 +6,6 @@ import { environmentSession } from "../../state/session";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
-  EnvironmentId,
   ModelSelection,
   ProjectReadFileResult,
   ProviderInteractionMode,
@@ -15,8 +14,14 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 import {
+  boatVmDraftLaunch,
+  boatVmRunOnChoices,
+  boatVmRunOnLabel,
+} from "@t3tools/client-runtime/boat-vms";
+import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EnvironmentId,
   DEFAULT_RUNTIME_MODE,
   DEFAULT_SERVER_SETTINGS,
   MessageId,
@@ -49,6 +54,13 @@ import {
 } from "../../lib/modelOptions";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
+import {
+  boatVmEnvironment,
+  launchBoatVm,
+  useBoatVmEnvironmentLabels,
+  useBoatVmHostEnvironmentId,
+  useBoatVmPairings,
+} from "../../state/boatVms";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -165,6 +177,20 @@ export function branchBadgeLabel(input: {
   return null;
 }
 
+type NewTaskEnvironment = {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  /** A boat VM to start, or a new one (`sandboxId` null); its id is not an environment's. */
+  readonly boatVm?: { readonly sandboxId: string | null };
+  readonly disabledReason?: string;
+};
+
+const boatVmEntry = (sandboxId: string | null, label: string): NewTaskEnvironment => ({
+  environmentId: EnvironmentId.make(`boat-vm:${sandboxId ?? "new"}`),
+  environmentLabel: label,
+  boatVm: { sandboxId },
+});
+
 type NewTaskFlowContextValue = {
   readonly activeNewTask: { readonly pendingKey: string | null } | null;
   readonly projectScopes: ReadonlyArray<HomeProjectScope>;
@@ -195,10 +221,7 @@ type NewTaskFlowContextValue = {
   readonly interactionMode: ProviderInteractionMode;
   readonly planModeEnabled: boolean;
   readonly expandedProvider: string | null;
-  readonly environments: ReadonlyArray<{
-    readonly environmentId: EnvironmentId;
-    readonly environmentLabel: string;
-  }>;
+  readonly environments: ReadonlyArray<NewTaskEnvironment>;
   readonly selectedProject: EnvironmentProject | null;
   readonly isScratchDraft: boolean;
   readonly modelOptions: ReadonlyArray<ModelOption>;
@@ -380,7 +403,7 @@ export function NewTaskFlowProvider(
   // workspaceRoot, and an "" basename would reject every real host below.
   const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
   const selectedProjectTitle = selectedProject?.title ?? null;
-  const environments = (() => {
+  const machineEnvironments = ((): ReadonlyArray<NewTaskEnvironment> => {
     if (isScratchDraft) {
       return scratchEnvironments.map((environment) => ({
         environmentId: environment.environmentId,
@@ -425,6 +448,76 @@ export function NewTaskFlowProvider(
       });
     }
     return result;
+  })();
+
+  // A new task in a repository, or without a project, can also run on a boat
+  // VM, started by the environment holding the boat key.
+  const boatVmDraft =
+    editingPendingTask === null
+      ? boatVmDraftLaunch({ isDraft: true, project: selectedProject, isScratch: isScratchDraft })
+      : null;
+  const boatVmHostId = useBoatVmHostEnvironmentId(selectedEnvironmentId);
+  const boatVmPairings = useBoatVmPairings();
+  const draftCanRunOnBoat =
+    props.active !== false && selectedProject !== null && editingPendingTask === null;
+  const boatVms = useEnvironmentQuery(
+    boatVmHostId === null || !draftCanRunOnBoat
+      ? null
+      : boatVmEnvironment.list({ environmentId: boatVmHostId, input: {} }),
+  );
+  useBoatVmEnvironmentLabels(boatVms.data?.available === true ? boatVms.data.vms : undefined);
+  const boatVmPairingFor = (environmentId: EnvironmentId) =>
+    boatVmPairings.find((pairing) => pairing.environmentId === environmentId) ?? null;
+  const boatVmHostLabel =
+    (boatVmHostId === null ? undefined : savedConnectionsById[boatVmHostId]?.environmentLabel) ??
+    "the environment managing boat VMs";
+  // Shown, with the reason, rather than hidden when a task cannot start a boat VM.
+  const newBoatVmDisabledReason =
+    boatVms.error !== null
+      ? `Could not list boat VMs: ${boatVms.error}`
+      : boatVms.data?.available === false
+        ? `Add a boat key on ${boatVmHostLabel} in Settings, Integrations, Sandbox jobs.`
+        : boatVmDraft === null
+          ? "This project has no Git remote T3 recognizes."
+          : undefined;
+  const newBoatVm = (): NewTaskEnvironment => ({
+    ...boatVmEntry(null, "New boat VM"),
+    ...(newBoatVmDisabledReason === undefined ? {} : { disabledReason: newBoatVmDisabledReason }),
+  });
+  const environments = ((): ReadonlyArray<NewTaskEnvironment> => {
+    if (boatVms.data?.available !== true) {
+      return draftCanRunOnBoat && newBoatVmDisabledReason !== undefined
+        ? [...machineEnvironments, newBoatVm()]
+        : machineEnvironments;
+    }
+    const { sandboxIds } = boatVms.data;
+    const choices = boatVmRunOnChoices(
+      machineEnvironments.map((environment) => ({
+        ...environment,
+        label: environment.environmentLabel,
+      })),
+      boatVms.data.vms,
+      (environmentId) => boatVmPairingFor(environmentId)?.hostname ?? null,
+      sandboxIds === undefined
+        ? undefined
+        : {
+            sandboxIds,
+            pairedVmOf: (environmentId) => {
+              const vm = boatVmPairingFor(environmentId)?.recorded ?? null;
+              return vm === null
+                ? null
+                : { sandboxId: vm.sandboxId, owned: vm.hostEnvironmentId === boatVmHostId };
+            },
+          },
+    );
+    return [
+      ...choices.machines.map(({ label, ...environment }) => ({
+        ...environment,
+        environmentLabel: label,
+      })),
+      ...choices.vms.map((vm) => boatVmEntry(vm.sandboxId, boatVmRunOnLabel(vm))),
+      newBoatVm(),
+    ];
   })();
 
   const selectedProjectDraftKey = editingPendingTask
@@ -769,7 +862,46 @@ export function NewTaskFlowProvider(
     null,
   );
   const latestSwitchRef = useRef<object | null>(null);
+  const boatVmLaunchRef = useRef<object | null>(null);
+  /**
+   * Starts the VM and moves the draft to its project once it is paired; the
+   * launch shows in the draft's composer. A draft that moved or was sent in
+   * the meantime stays where it is.
+   */
+  const startBoatVm = (sandboxId: string | null): boolean => {
+    const draftKey = selectedProjectDraftKey;
+    if (boatVmHostId === null || boatVmDraft === null || draftKey === null) return false;
+    const stamp = appAtomRegistry.get(composerDraftsAtom)[draftKey]?.project;
+    const request = {};
+    boatVmLaunchRef.current = request;
+    void launchBoatVm({
+      hostEnvironmentId: boatVmHostId,
+      sandboxId,
+      repository: boatVmDraft === "scratch" ? null : boatVmDraft,
+      bannerKey: draftKey,
+    }).then((launched) => {
+      if (launched === null) return;
+      if (launched.warning !== undefined) {
+        Dialog.alert("The boat VM is ready, but its checkout was not updated", launched.warning);
+      }
+      const current = appAtomRegistry.get(composerDraftsAtom)[draftKey]?.project;
+      if (
+        boatVmLaunchRef.current !== request ||
+        current === undefined ||
+        current.environmentId !== stamp?.environmentId ||
+        current.projectId !== stamp.projectId
+      )
+        return;
+      boatVmLaunchRef.current = null;
+      setProject(launched.project);
+    });
+    return true;
+  };
   const switchEnvironment = async (environmentId: EnvironmentId): Promise<boolean> => {
+    const target = environments.find((environment) => environment.environmentId === environmentId);
+    if (target?.boatVm !== undefined) {
+      return target.disabledReason === undefined && startBoatVm(target.boatVm.sandboxId);
+    }
     if (environmentId === selectedEnvironmentId) {
       latestSwitchRef.current = null;
       setSwitchingToEnvironmentId(null);

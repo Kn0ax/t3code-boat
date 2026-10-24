@@ -217,14 +217,16 @@ import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../termina
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { useEnvironmentQuery } from "../state/query";
 import {
-  boatVmEnvironment,
   boatVmDraftLaunch,
   boatVmPairingOf,
   boatVmRepositoryOf,
+  pairedBoatVm,
+} from "@t3tools/client-runtime/boat-vms";
+import {
+  boatVmEnvironment,
   boatVmRunOnOptions,
   newBoatVmEntry,
   useBoatVmEnvironmentLabels,
-  pairedBoatVm,
   useLaunchBoatVm,
 } from "../state/boatVms";
 import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";

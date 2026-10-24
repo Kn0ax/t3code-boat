@@ -279,6 +279,9 @@ export interface ThreadDetailScreenProps {
   readonly onSubmitUserInput: () => Promise<unknown>;
   readonly onDismissUserInput: () => Promise<unknown>;
   readonly showContent?: boolean;
+  /** Shown above the composer, as for a boat VM thread's copy. */
+  readonly composerBanner?: React.ReactNode;
+  readonly sendBlockedReason?: string | null;
 }
 
 function latestStreamingAssistantMessage(
@@ -1509,6 +1512,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                       onDismiss={() => props.onDismissFeedback(submission.id)}
                     />
                   ))}
+                  {props.composerBanner}
                   {composerError !== null ? (
                     <Animated.View
                       className="shrink-0"
@@ -1667,7 +1671,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                             : props.creationState?.kind === "preparing" &&
                                 !props.creationState.serverOwned
                               ? "Starting the task…"
-                              : null
+                              : (props.sendBlockedReason ?? null)
                         }
                         interactionLocked={props.draftMode?.interactionLocked}
                         draftKey={props.composerDraftKey ?? undefined}

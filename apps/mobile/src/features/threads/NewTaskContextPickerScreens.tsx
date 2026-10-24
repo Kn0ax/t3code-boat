@@ -282,6 +282,49 @@ function BranchSelectionRow(props: {
   );
 }
 
+/** A boat VM to start, or "New boat VM"; picking it starts the VM and returns to the draft. */
+function BoatVmPickerRow(props: {
+  title: string;
+  disabledReason: string | undefined;
+  disabled: boolean;
+  isLast: boolean;
+  onPress: () => void;
+}) {
+  const unavailable = props.disabledReason !== undefined;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={props.title}
+      accessibilityHint={props.disabledReason ?? "Starts the boat VM for this task"}
+      accessibilityState={{ disabled: props.disabled || unavailable }}
+      disabled={props.disabled || unavailable}
+      onPress={props.onPress}
+      className={cn(
+        "min-h-16 flex-row items-center gap-3 bg-grouped-card px-4 py-3 active:bg-subtle",
+        !props.isLast && "border-b border-border-subtle",
+      )}
+    >
+      <EnvironmentMachineSymbol kind="cloud" size={20} tintColorClassName="accent-icon-muted" />
+      <View className="min-w-0 flex-1 gap-1">
+        <Text
+          className={cn(
+            "text-base font-t3-medium",
+            unavailable ? "text-foreground-muted" : "text-foreground",
+          )}
+          numberOfLines={1}
+        >
+          {props.title}
+        </Text>
+        {props.disabledReason !== undefined ? (
+          <Text className="text-xs text-foreground-muted" numberOfLines={3}>
+            {props.disabledReason}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
 function PickerSurface(props: { readonly children: ReactNode }) {
   return (
     <View
@@ -326,22 +369,38 @@ export function NewTaskEnvironmentPickerRouteScreen() {
           showsVerticalScrollIndicator={false}
         >
           <PickerSurface>
-            {flow.environments.map((environment, index) => (
-              <EnvironmentPickerRow
-                key={String(environment.environmentId)}
-                environmentId={environment.environmentId}
-                isLast={index === flow.environments.length - 1}
-                disabled={flow.switchingToEnvironmentId !== null}
-                onPress={() => {
-                  void Haptics.selectionAsync();
-                  void flow.switchEnvironment(environment.environmentId).then((switched) => {
-                    if (switched) navigation.goBack();
-                  });
-                }}
-                selected={flow.selectedEnvironmentId === environment.environmentId}
-                title={environment.environmentLabel}
-              />
-            ))}
+            {flow.environments.map((environment, index) =>
+              environment.boatVm !== undefined ? (
+                <BoatVmPickerRow
+                  key={String(environment.environmentId)}
+                  title={environment.environmentLabel}
+                  disabledReason={environment.disabledReason}
+                  disabled={flow.switchingToEnvironmentId !== null}
+                  isLast={index === flow.environments.length - 1}
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    void flow.switchEnvironment(environment.environmentId).then((started) => {
+                      if (started) navigation.goBack();
+                    });
+                  }}
+                />
+              ) : (
+                <EnvironmentPickerRow
+                  key={String(environment.environmentId)}
+                  environmentId={environment.environmentId}
+                  isLast={index === flow.environments.length - 1}
+                  disabled={flow.switchingToEnvironmentId !== null}
+                  onPress={() => {
+                    void Haptics.selectionAsync();
+                    void flow.switchEnvironment(environment.environmentId).then((switched) => {
+                      if (switched) navigation.goBack();
+                    });
+                  }}
+                  selected={flow.selectedEnvironmentId === environment.environmentId}
+                  title={environment.environmentLabel}
+                />
+              ),
+            )}
           </PickerSurface>
         </ScrollView>
       </ScreenContent>

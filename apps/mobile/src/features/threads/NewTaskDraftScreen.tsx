@@ -67,6 +67,8 @@ import { projectEnvironment } from "../../state/projects";
 import { sourceControlEnvironment } from "../../state/sourceControl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProjectCloneBanner } from "./ProjectCloneBanner";
+import { BoatVmLaunchBanner } from "./BoatVmBanners";
+import { useBoatVmLaunch } from "../../state/boatVms";
 import {
   describeUnavailableModelSelection,
   isModelSelectionUnavailable,
@@ -188,6 +190,7 @@ export function NewTaskDraftScreen(props: {
     selectedProject?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
+  const boatVmLaunch = useBoatVmLaunch(flow.draftKey);
   const projectCloneState = useProjectClone(
     selectedProject
       ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
@@ -975,9 +978,13 @@ export function NewTaskDraftScreen(props: {
         ? "Wait for the project clone to finish."
         : flow.submitting
           ? "Starting the thread…"
-          : flow.workspaceMode === "worktree" && (!flow.selectedBranchName || !flow.isGitRepoKnown)
-            ? "Choose a base branch before creating a worktree."
-            : null
+          : boatVmLaunch !== undefined && boatVmLaunch.phase !== "failed"
+            ? // The draft moves to the VM once it is paired.
+              "Starting the boat VM…"
+            : flow.workspaceMode === "worktree" &&
+                (!flow.selectedBranchName || !flow.isGitRepoKnown)
+              ? "Choose a base branch before creating a worktree."
+              : null
       : "Wait for shared content to finish importing.";
   const chooseProject = () => {
     if (isComposerInteractionLocked) {
@@ -1198,6 +1205,7 @@ export function NewTaskDraftScreen(props: {
                   />
                 </View>
               ) : null}
+              <BoatVmLaunchBanner bannerKey={flow.draftKey} inset="draft" />
               {flow.canChooseWorkspace ? workspaceControls : null}
             </View>
           ),

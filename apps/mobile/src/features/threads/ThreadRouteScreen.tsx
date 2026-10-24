@@ -78,6 +78,13 @@ import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import { threadEnvironment } from "../../state/threads";
+import { boatVmRepositoryOf } from "@t3tools/client-runtime/boat-vms";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import {
+  clearComposerDraftContent,
+  getComposerDraftSnapshot,
+} from "../../state/use-composer-drafts";
+import { BoatVmLaunchBanner, useBoatVmCopy } from "./BoatVmBanners";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
@@ -424,6 +431,34 @@ function ThreadRouteContent(
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
+  const boatVmLaunchKey =
+    selectedThread === null
+      ? null
+      : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
+  const boatVmCopy = useBoatVmCopy({
+    thread: selectedThreadCreation === null ? selectedThread : null,
+    repository:
+      selectedThreadProject !== null &&
+      isScratchProject(
+        selectedThreadProject,
+        routeEnvironmentRuntime?.serverConfig?.scratchWorkspaceRoot ?? null,
+      )
+        ? "scratch"
+        : boatVmRepositoryOf(selectedThreadProject?.repositoryIdentity),
+    bannerKey: boatVmLaunchKey ?? "",
+  });
+  // A copy whose boat VM was deleted continues on a new VM; only the text goes along.
+  const continueOnNewVm = boatVmCopy.continueOnNewVm;
+  const onSendMessage: typeof composer.onSendMessage =
+    continueOnNewVm === null || boatVmLaunchKey === null
+      ? composer.onSendMessage
+      : async () => {
+          const message = getComposerDraftSnapshot(boatVmLaunchKey).text.trim();
+          if (await continueOnNewVm(message === "" ? null : message)) {
+            clearComposerDraftContent(boatVmLaunchKey);
+          }
+          return null;
+        };
   const selectedThreadWithDraftSettings = selectedThread
     ? {
         ...selectedThread,
@@ -1000,7 +1035,14 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
           onResumeQueue={composer.queueHeld ? handleResumeQueue : null}
-          onSendMessage={composer.onSendMessage}
+          onSendMessage={onSendMessage}
+          composerBanner={
+            <>
+              <BoatVmLaunchBanner bannerKey={boatVmLaunchKey} />
+              {boatVmCopy.banner}
+            </>
+          }
+          sendBlockedReason={boatVmCopy.sendBlockedReason}
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

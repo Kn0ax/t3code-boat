@@ -1,3 +1,4 @@
+import { boatVmCapableEnvironmentIds } from "@t3tools/client-runtime/boat-vms";
 import {
   DEFAULT_SERVER_SETTINGS,
   type EnvironmentId,
@@ -6,11 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { useState } from "react";
 
-import {
-  boatVmCapableEnvironmentIds,
-  setBoatVmHostEnvironmentId,
-  useBoatVmHostEnvironmentId,
-} from "../../state/boatVmHost";
+import { setBoatVmHostEnvironmentId, useBoatVmHostEnvironmentId } from "../../state/boatVmHost";
 import { useBoatCatalog } from "../../state/boatSnapshots";
 import { useEnvironments } from "../../state/environments";
 import { resolveServerSelfUpdateCapability } from "../../versionSkew";

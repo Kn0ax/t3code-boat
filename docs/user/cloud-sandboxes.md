@@ -60,7 +60,9 @@ client.
 One environment holds these keys and starts boat VMs and sandbox jobs for this
 device: your primary connection, unless you pick another under **Boat VMs →
 Managed by**. The choice is saved on this device. Settings for any other
-environment link to the one that manages them.
+environment link to the one that manages them. The mobile app has no such
+choice: it uses the new task's environment when that can, else the first
+connected environment that is not itself a boat VM.
 
 Ask an agent to run something in a sandbox job. The job gets a copy of the
 workspace, including uncommitted changes, and keeps that disk between
@@ -98,8 +100,8 @@ the VM directly within your tailnet instead, which needs Tailscale set to
 tailnet HTTP without waiting for a certificate. Web clients opened over HTTPS
 also require HTTPS certificates enabled for the tailnet.
 
-In a new thread whose project has a Git remote, open **Run on** and choose
-**New boat VM**, or an earlier VM. A new VM starts from a boat snapshot named
+In a new thread whose project has a Git remote, open **Run on** (on mobile, the
+new task's environment picker) and choose **New boat VM**, or an earlier VM. A new VM starts from a boat snapshot named
 `t3-<owner>-<repo>` (lowercase), else the **Base snapshot** (`t3-base` by
 default), else a plain VM. It checks the repository out at `~/work/<repo>` and
 joins the tailnet when Tailscale is set up. Cancelling a start deletes a new

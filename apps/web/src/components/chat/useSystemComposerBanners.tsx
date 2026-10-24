@@ -14,7 +14,7 @@ import { environmentCatalog } from "../../connection/catalog";
 import { ConnectionDiagnosisHeadline } from "../settings/ConnectionDiagnosisDetails";
 import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
 import { useEnvironmentDisconnectDelay } from "../../hooks/useEnvironmentDisconnectDelay";
-import { boatVmEnvironmentLabel } from "../../state/boatVms";
+import { boatVmEnvironmentLabel } from "@t3tools/client-runtime/boat-vms";
 import { serverEnvironment } from "../../state/server";
 import { type EnvironmentPresentation } from "../../state/environments";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";

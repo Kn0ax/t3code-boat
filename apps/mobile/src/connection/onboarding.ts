@@ -29,6 +29,20 @@ export const connectPairingUrl = createRuntimeCommand(connectionAtomRuntime, {
     ),
 });
 
+/** Pairs with a host and code rather than a link, as with a boat VM a launch returned. */
+export const connectPairing = createRuntimeCommand(connectionAtomRuntime, {
+  label: "mobile:connection:connect-pairing",
+  scheduler: onboardingScheduler,
+  concurrency: {
+    mode: "singleFlight",
+    key: (input: ConnectionOnboarding.PairingConnectionInput) => JSON.stringify(input),
+  },
+  execute: (input: ConnectionOnboarding.PairingConnectionInput) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.registerPairing(input)),
+    ),
+});
+
 export const updateBearerConnection = createRuntimeCommand(connectionAtomRuntime, {
   label: "mobile:connection:update-bearer",
   scheduler: onboardingScheduler,
