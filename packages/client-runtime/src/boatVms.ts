@@ -59,6 +59,12 @@ const boatVmTitle = (vmLabel: string): string =>
   vmLabel === BOAT_VM_SCRATCH_LABEL ? "No project" : vmLabel;
 
 /** How a paired boat VM is named wherever its environment shows. */
+/** boat's mark, drawn in a 260 x 260 box through BOAT_LOGO_TRANSFORM, for marking boat VMs. */
+export const BOAT_LOGO_VIEW_BOX = "0 0 260 260";
+export const BOAT_LOGO_TRANSFORM = "translate(0 260) scale(0.1 -0.1)";
+export const BOAT_LOGO_PATH =
+  "M690 2364 c-52 -31 -142 -84 -200 -117 -58 -33 -113 -67 -122 -75 -16 -14 -18 -40 -18 -278 l0 -264 53 -34 c128 -82 389 -226 410 -226 13 0 64 23 113 52 160 93 172 98 241 98 71 0 110 -15 161 -64 137 -128 85 -350 -93 -401 -85 -25 -124 -15 -273 70 -72 41 -139 75 -149 75 -10 0 -67 -29 -128 -64 -60 -35 -155 -89 -210 -121 -55 -31 -106 -64 -112 -73 -10 -12 -13 -82 -13 -272 0 -253 0 -257 23 -277 26 -23 428 -253 443 -253 5 0 45 21 89 46 293 170 357 209 365 225 6 10 10 80 10 156 0 76 5 155 11 177 13 48 82 123 134 147 52 24 138 24 191 0 23 -11 85 -44 137 -75 52 -31 107 -56 121 -56 14 0 70 25 124 57 53 31 144 83 202 116 58 33 113 67 123 75 15 14 17 40 17 273 0 255 0 259 -22 279 -13 12 -39 30 -58 40 -19 10 -109 61 -199 114 -90 53 -173 96 -185 96 -12 0 -77 -32 -146 -72 -117 -67 -130 -72 -196 -76 -61 -3 -77 -1 -122 22 -55 28 -97 75 -118 133 -9 25 -13 89 -14 189 0 172 8 156 -105 221 -38 22 -130 74 -202 116 -81 47 -143 77 -160 77 -16 -1 -71 -26 -123 -56z";
+
 export const boatVmEnvironmentLabel = (vmLabel: string): string => `boat: ${boatVmTitle(vmLabel)}`;
 
 /**

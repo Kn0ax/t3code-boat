@@ -1,5 +1,14 @@
+import {
+  BOAT_LOGO_PATH,
+  BOAT_LOGO_TRANSFORM,
+  BOAT_LOGO_VIEW_BOX,
+} from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
+import Svg, { Path } from "react-native-svg";
+import { withUniwind } from "uniwind";
 import { SymbolView, type AppSymbolName } from "./ui/AppSymbol";
+
+const ThemedSvg = withUniwind(Svg);
 
 export const ENVIRONMENT_MACHINE_SYMBOLS = {
   server: "server.rack",
@@ -43,12 +52,14 @@ export function BoatVmSymbol(props: {
   readonly tintColorClassName: string;
 }) {
   return (
-    <SymbolView
+    <ThemedSvg
       accessibilityLabel="Boat VM"
-      name="b.square"
-      size={props.size}
-      tintColorClassName={props.tintColorClassName}
-      type="monochrome"
-    />
+      width={props.size}
+      height={props.size}
+      viewBox={BOAT_LOGO_VIEW_BOX}
+      colorClassName={props.tintColorClassName}
+    >
+      <Path transform={BOAT_LOGO_TRANSFORM} d={BOAT_LOGO_PATH} fill="currentColor" />
+    </ThemedSvg>
   );
 }

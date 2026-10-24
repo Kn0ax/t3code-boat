@@ -1,3 +1,8 @@
+import {
+  BOAT_LOGO_PATH,
+  BOAT_LOGO_TRANSFORM,
+  BOAT_LOGO_VIEW_BOX,
+} from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
 import type { FunctionComponent, SVGProps } from "react";
@@ -39,13 +44,18 @@ function MacStudioIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-/** The boat mark: a rounded square with a B, for boat VMs. */
 function BoatVmIcon(props: SVGProps<SVGSVGElement>) {
   return (
-    <LucideLike {...props}>
-      <rect width="18" height="18" x="3" y="3" rx="2" />
-      <path d="M10 16h2a2 2 0 1 0 0-4h-2h2a2 2 0 1 0 0-4h-2v8z" />
-    </LucideLike>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox={BOAT_LOGO_VIEW_BOX}
+      fill="currentColor"
+      {...props}
+    >
+      <path transform={BOAT_LOGO_TRANSFORM} d={BOAT_LOGO_PATH} />
+    </svg>
   );
 }
 
