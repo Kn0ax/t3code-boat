@@ -146,7 +146,7 @@ new one replaces it each time the VM starts. For this, the manager needs an
 address on your tailnet, such as one from Tailscale Serve.
 
 The server with the boat key also keeps a copy of every thread on its running
-VMs. About every 5 minutes it copies new messages and tool activity from the
+VMs. About every 3 minutes it copies new messages and tool activity from the
 VM's threads to its own project for the same repository, or to its **No
 project** when it has none for that repository or the VM was started without
 one. Subagent threads are not copied on their own. Deleted threads are never
@@ -180,7 +180,8 @@ threads one last time:
   fails, for example because no project there has that repository, the VM is
   kept running and the copy retried.
 - Every thread deleted: the VM is deleted.
-- A VM you just started or resumed is left alone for the minutes you set.
+- A VM you just started or resumed is left alone for the minutes you set,
+  unless every thread on it is deleted.
 
 Before it stops or deletes a running VM, the server brings the VM's commits home
 as with **Bring boat VM work home**. A copy keeps the conversation and tool

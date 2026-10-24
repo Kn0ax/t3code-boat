@@ -2543,6 +2543,30 @@ describe("boat VM lifecycle", () => {
       assert.deepEqual(record.stopped, ["vm1"]);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "deletes a VM the user just started once its only thread's copy is deleted here",
+    () => {
+      const contents = new Map<string, VmContents>([
+        ["vm1", { threads: [vmThread("t1")], archived: [] }],
+      ]);
+      const copies = new Map<string, ThreadImportService.CopyState | "deleted">();
+      const { record, layer } = makeLifecycleHarness({
+        contents,
+        vms: [running("vm1")],
+        copyState: (originKey) => Effect.succeed(copies.get(originKey) ?? null),
+      });
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(nowMs);
+        const vms = yield* BoatVmService.BoatVmService;
+        yield* vms.launch({ repository: repository(), sandboxId: "vm1" });
+        yield* vms.keepAlive;
+        copies.set("boat-vm:vm1:t1", "deleted");
+        yield* vms.keepAlive;
+        assert.include(record.events, "destroy:vm1");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
 
 /**

@@ -272,12 +272,13 @@ function decide(input: {
   if (input.unknown.length > 0) return "none";
   // A delegated task can run on while its parent waits idle.
   if (input.subagents.some((thread) => BUSY_STATUSES.has(thread.status))) return "none";
-  // A VM the user just started or resumed gets the idle window before any rule
-  // applies, so resuming a snoozed or done thread's VM does not undo itself.
-  if (input.launchedAtMs !== undefined && input.launchedAtMs > quietSince) return "none";
+  // Deleting every thread is a decision about the VM itself, so it does not wait.
   if (input.threads.length === 0 && input.archived.length === 0) {
     return input.hadThreads ? "delete" : "none";
   }
+  // A VM the user just started or resumed gets the idle window before any other
+  // rule applies, so resuming a snoozed or done thread's VM does not undo itself.
+  if (input.launchedAtMs !== undefined && input.launchedAtMs > quietSince) return "none";
   const open = input.threads.filter((thread) => !thread.settled);
   if (open.length === 0) return "settle";
   const resting = (thread: VmThread) =>

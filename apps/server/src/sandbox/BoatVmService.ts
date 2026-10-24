@@ -99,7 +99,7 @@ import { sandboxT3Release } from "./SandboxJobService.ts";
 
 const T3_PORT = 3773;
 /** Activity in the last check interval (plus slack) keeps a VM up. */
-const KEEP_ALIVE_INTERVAL_MINUTES = 5;
+const KEEP_ALIVE_INTERVAL_MINUTES = 3;
 const SCRIPT_TIMEOUT_MS = 5 * 60_000;
 /** Linking includes the VM signing in to this server over the tailnet. */
 const MANAGER_LINK_TIMEOUT_MS = 60_000;
