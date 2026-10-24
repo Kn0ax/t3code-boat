@@ -26,7 +26,8 @@ import {
 } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
-import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+import { EnvironmentMachineIcon, EnvironmentOptionIcon } from "./EnvironmentMachineIcon";
+import { useRefreshBoatVmsOnOpen } from "../state/boatVms";
 import { useProject, useThreadShellsForProjectRefs } from "../state/entities";
 import {
   ADD_TO_MACHINE_LABEL_CLASS,
@@ -197,6 +198,9 @@ const RunContextSelector = memo(function RunContextSelector({
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment =
     availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
+  const refreshBoatVms = useRefreshBoatVmsOnOpen(
+    showEnvironmentPicker ? availableEnvironments : undefined,
+  );
   const WorkspaceIcon =
     effectiveEnvMode === "worktree"
       ? FolderGit2Icon
@@ -253,8 +257,8 @@ const RunContextSelector = memo(function RunContextSelector({
               aria-hidden="true"
             />
           ) : (
-            <EnvironmentMachineIcon
-              kind={activeEnvironment?.machine ?? "server"}
+            <EnvironmentOptionIcon
+              option={activeEnvironment}
               className={isPanel ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3 shrink-0 mx-0!"}
             />
           )}
@@ -294,7 +298,7 @@ const RunContextSelector = memo(function RunContextSelector({
   }
 
   return (
-    <Menu>
+    <Menu onOpenChange={refreshBoatVms}>
       <MenuTrigger
         render={isPanel ? <ThreadDetailsControl part="select" /> : <ComposerControl size="xs" />}
         className={isPanel ? undefined : "min-w-0 max-w-[48%] flex-initial justify-start"}
@@ -371,11 +375,13 @@ const RunContextSelector = memo(function RunContextSelector({
                   >
                     <span className="flex min-w-0 flex-col">
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <EnvironmentMachineIcon kind={env.machine} className="size-3" />
+                        <EnvironmentOptionIcon option={env} className="size-3" />
                         <span className="min-w-0 truncate">{env.label}</span>
                       </span>
-                      {env.disabledReason !== undefined ? (
-                        <span className="text-muted-foreground text-xs">{env.disabledReason}</span>
+                      {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
+                        <span className="text-muted-foreground text-xs">
+                          {env.disabledReason ?? env.boatVmNote}
+                        </span>
                       ) : null}
                     </span>
                   </MenuRadioItem>

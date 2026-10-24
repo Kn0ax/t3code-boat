@@ -111,26 +111,40 @@ const MAX_BOAT_NAME_LENGTH = 120;
 const T3_NAME_MARKER = BOAT_SANDBOX_NAME_PREFIX.trimEnd();
 
 /**
+ * Starts a label that is already a whole T3 name, as boat VMs' labels are
+ * (`t3:<repository>[:<task>]`); such a label is the name, unprefixed.
+ */
+const T3_NAMED_LABEL_PREFIX = "t3:";
+
+/**
  * The name the adapter gives a sandbox: the prefix plus the label with
- * whitespace runs collapsed (`sandbox` for a blank one), cut at 120 code
- * points so a cut never splits a surrogate pair.
+ * whitespace runs collapsed (`sandbox` for a blank one), or a label that
+ * is already a T3 name, cut at 120 code points so a cut never splits a
+ * surrogate pair.
  */
 export function boatSandboxName(label: string): string {
   const collapsed = label.replace(/\s+/gu, " ").trim();
-  const name = Array.from(`${BOAT_SANDBOX_NAME_PREFIX}${collapsed || "sandbox"}`);
+  const name = Array.from(
+    collapsed.startsWith(T3_NAMED_LABEL_PREFIX)
+      ? collapsed
+      : `${BOAT_SANDBOX_NAME_PREFIX}${collapsed || "sandbox"}`,
+  );
   return name.length > MAX_BOAT_NAME_LENGTH
     ? name.slice(0, MAX_BOAT_NAME_LENGTH).join("")
     : name.join("");
 }
 
 export function isT3Sandbox(sandbox: Pick<BoatSandbox, "name">): boolean {
-  return sandbox.name?.startsWith(T3_NAME_MARKER) === true;
+  return (
+    sandbox.name?.startsWith(T3_NAME_MARKER) === true ||
+    sandbox.name?.startsWith(T3_NAMED_LABEL_PREFIX) === true
+  );
 }
 
 /** The label a sandbox shows in T3: its name without the prefix, else the id. */
 export function boatSandboxLabel(sandbox: Pick<BoatSandbox, "id" | "name">): string {
   const name = sandbox.name ?? "";
-  const label = isT3Sandbox(sandbox) ? name.slice(T3_NAME_MARKER.length).trim() : name;
+  const label = name.startsWith(T3_NAME_MARKER) ? name.slice(T3_NAME_MARKER.length).trim() : name;
   return label.length > 0 ? label : sandbox.id;
 }
 

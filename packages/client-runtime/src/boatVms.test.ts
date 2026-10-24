@@ -17,7 +17,9 @@ import {
   type BoatVmLaunchEntry,
   type BoatVmPairing,
   boatVmPairingInput,
+  boatVmEnvironmentLabel,
   boatVmRunOnChoices,
+  boatVmRunOnRow,
   resolveBoatVmHostEnvironmentId,
   updateBoatVmLaunchEntries,
   withoutShadowedBoatVmCopies,
@@ -279,7 +281,45 @@ describe("boatVmRunOnChoices", () => {
       (environmentId) => (environmentId === "vm" ? "t3-vm-bxrun" : null),
     );
     expect(choices.machines.map((machine) => machine.label)).toEqual(["Laptop", "boat: acme/app"]);
+    expect(choices.machines.map((machine) => machine.pairedBoatVm?.sandboxId)).toEqual([
+      undefined,
+      "bx_run",
+    ]);
     expect(choices.vms.map((vm) => vm.sandboxId)).toEqual(["bx_stop"]);
+  });
+});
+
+describe("boatVmRunOnRow", () => {
+  it("names each VM by its repository and says it is a boat VM in its state", () => {
+    // The list a manager returned for a running repository VM and a stopped No project VM.
+    const vms = [
+      { sandboxId: "bx_a", label: "acme/app", status: "running" },
+      { sandboxId: "bx_b", label: "scratch", status: "stopped" },
+    ] as const;
+    const choices = boatVmRunOnChoices([], vms, () => null);
+    expect(choices.vms.map((vm) => boatVmRunOnRow(vm))).toEqual([
+      { title: "acme/app", note: "Boat VM · running" },
+      { title: "No project", note: "Boat VM · stopped, starts when picked" },
+    ]);
+    expect(boatVmRunOnRow({ label: "acme/app", status: "creating" }).note).toBe(
+      "Boat VM · starting",
+    );
+    expect(
+      boatVmRunOnRow({ label: "acme/app", status: "stopping", task: "Fix the login" }).note,
+    ).toBe("Boat VM · stopped, starts when picked · Fix the login");
+  });
+
+  it("says what New boat VM makes, with or without a project", () => {
+    expect(boatVmRunOnRow(null)).toEqual({
+      title: "New boat VM",
+      note: "Creates a cloud VM for this repo",
+    });
+    expect(boatVmRunOnRow(null, { scratch: true }).note).toBe("Creates a cloud VM with no project");
+  });
+
+  it("names a paired No project VM the same way wherever it shows", () => {
+    expect(boatVmEnvironmentLabel("scratch")).toBe("boat: No project");
+    expect(boatVmEnvironmentLabel("acme/app")).toBe("boat: acme/app");
   });
 });
 

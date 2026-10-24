@@ -27,6 +27,8 @@ export interface EnvironmentOption {
   boatVm?: { readonly sandboxId: string | null };
   /** Why the entry cannot be picked; shown under it instead of hiding it. */
   disabledReason?: string;
+  /** Set on a boat VM, started or paired: what it is, shown under it with the boat mark. */
+  boatVmNote?: string;
 }
 
 /** "Add to another machine" stays muted until hovered: easy to find, quieter than the machines. */

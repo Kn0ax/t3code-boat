@@ -13,6 +13,7 @@ import {
   boatSandboxStatus,
   boatTtlSeconds,
   isBoatRegion,
+  isT3Sandbox,
   MAX_BOAT_ENV_BYTES,
 } from "./mapping.ts";
 
@@ -80,6 +81,18 @@ describe("boatSandboxName / boatSandboxLabel", () => {
       assert.equal(boatSandboxName("  "), `${BOAT_SANDBOX_NAME_PREFIX}sandbox`);
       assert.equal(boatSandboxLabel({ id: "sb-1", name: "t3code:" }), "sb-1");
       assert.equal(boatSandboxLabel({ id: "sb-1", name: "t3code:trimmed" }), "trimmed");
+    }),
+  );
+
+  it.effect("uses a label that is already a T3 name as the name, and lists both namings", () =>
+    Effect.sync(() => {
+      const name = boatSandboxName("t3:acme/app:Fix  the\nlogin");
+      assert.equal(name, "t3:acme/app:Fix the login");
+      assert.equal(boatSandboxLabel({ id: "sb-1", name }), name);
+      assert.equal(Array.from(boatSandboxName(`t3:acme/app:${"x".repeat(200)}`)).length, 120);
+      assert.isTrue(isT3Sandbox({ name }));
+      assert.isTrue(isT3Sandbox({ name: boatSandboxName("vm acme/app") }));
+      assert.isFalse(isT3Sandbox({ name: "t3-mine" }));
     }),
   );
 });

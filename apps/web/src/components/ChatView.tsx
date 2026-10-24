@@ -1205,7 +1205,7 @@ export default function ChatView(props: ChatViewProps) {
           logicalProjectEnvironments,
           boatVms.data.vms,
           boatVmHostnameOf,
-          newBoatVmDisabledReason,
+          { disabledReason: newBoatVmDisabledReason, scratch: boatVmDraft === "scratch" },
           boatVms.data.sandboxIds === undefined
             ? undefined
             : {
@@ -1214,7 +1214,10 @@ export default function ChatView(props: ChatViewProps) {
               },
         )
       : draftCanRunOnBoat && newBoatVmDisabledReason !== undefined
-        ? [...logicalProjectEnvironments, newBoatVmEntry(newBoatVmDisabledReason)]
+        ? [
+            ...logicalProjectEnvironments,
+            newBoatVmEntry(newBoatVmDisabledReason, boatVmDraft === "scratch"),
+          ]
         : logicalProjectEnvironments;
   const unavailableBoatVm =
     activeEnvironmentUnavailable && activeEnvironment !== null

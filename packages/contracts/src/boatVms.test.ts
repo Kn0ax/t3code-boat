@@ -2,12 +2,33 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   boatVmLaunchProgressSummary,
+  boatVmSandboxLabel,
   boatVmSnapshotName,
   boatVmSnapshotNameForLabel,
   boatVmThreadCopyOrigin,
   boatVmThreadOriginKey,
   isBoatSnapshotName,
+  parseBoatVmSandboxLabel,
 } from "./boatVms.ts";
+
+describe("boatVmSandboxLabel", () => {
+  it("names a VM t3:<repository>[:<task>] and reads both namings back", () => {
+    expect(boatVmSandboxLabel("acme/app", "Fix  the\nlogin")).toBe("t3:acme/app:Fix the login");
+    expect(boatVmSandboxLabel(null, "Explore")).toBe("t3:no-project:Explore");
+    expect(boatVmSandboxLabel("acme/app")).toBe("t3:acme/app");
+    expect(boatVmSandboxLabel("acme/app", "  ")).toBe("t3:acme/app");
+
+    expect(parseBoatVmSandboxLabel("t3:acme/app:Fix: the login")).toEqual({
+      label: "acme/app",
+      task: "Fix: the login",
+    });
+    expect(parseBoatVmSandboxLabel("t3:no-project")).toEqual({ label: "scratch" });
+    expect(parseBoatVmSandboxLabel("vm acme/app")).toEqual({ label: "acme/app" });
+    expect(parseBoatVmSandboxLabel("vm scratch")).toEqual({ label: "scratch" });
+    expect(parseBoatVmSandboxLabel("vm ")).toEqual({ label: "" });
+    expect(parseBoatVmSandboxLabel("sandbox job 1")).toBeNull();
+  });
+});
 
 describe("boatVmThreadCopyOrigin", () => {
   it("reads the VM thread back from a copy's id", () => {

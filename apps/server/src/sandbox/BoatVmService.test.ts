@@ -529,7 +529,7 @@ describe("BoatVmService", () => {
         record.targets.map((target) => target.snapshot),
         ["t3-acme-app", "t3-base"],
       );
-      assert.equal(record.targets[0]!.label, "vm Acme/app");
+      assert.equal(record.targets[0]!.label, "t3:Acme/app");
       assert.equal(record.targets[0]!.idleTimeoutMinutes, 30);
       assert.equal(record.targets[0]!.size, "small");
       // The keys never become boat sandbox env, which snapshots would copy.
@@ -602,7 +602,7 @@ describe("BoatVmService", () => {
           record.targets.map((target) => target.snapshot),
           [...expected],
         );
-        assert.equal(record.targets[0]!.label, "vm scratch");
+        assert.equal(record.targets[0]!.label, "t3:no-project");
         // No sync, so no sync env file with the keys.
         assert.deepEqual(record.written, []);
         assert.deepEqual(launched, {
@@ -1181,6 +1181,32 @@ describe("BoatVmService", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("lists VMs named either way, with their repository and task", () => {
+    const vm = (sandboxId: string, label: string) => ({
+      ref: { providerId: "boat" as const, sandboxId },
+      status: "stopped" as const,
+      label,
+    });
+    const { layer } = makeHarness({
+      vms: [
+        vm("legacy", "vm Acme/app"),
+        vm("named", "t3:Acme/app:Fix the login: again"),
+        vm("bare", "t3:Acme/app"),
+        vm("scratch", "t3:no-project:Explore"),
+        vm("job-node", "sandbox job 1"),
+      ],
+    });
+    return Effect.gen(function* () {
+      const listed = yield* (yield* BoatVmService.BoatVmService).list;
+      assert.deepEqual(listed.vms, [
+        { sandboxId: "legacy", label: "Acme/app", status: "stopped" },
+        { sandboxId: "named", label: "Acme/app", status: "stopped", task: "Fix the login: again" },
+        { sandboxId: "bare", label: "Acme/app", status: "stopped" },
+        { sandboxId: "scratch", label: "scratch", status: "stopped", task: "Explore" },
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("keeps only running VMs that had work alive", () => {
     const vm = (sandboxId: string, status: SandboxInfo["status"], label = `vm ${sandboxId}`) => ({
@@ -2659,7 +2685,7 @@ describe("boat VM thread launch", () => {
           threadId: ThreadId.make("vm-thread"),
           projectId: ProjectId.make("vm-project"),
         });
-        assert.equal(record.targets[0]!.label, "vm Acme/app");
+        assert.equal(record.targets[0]!.label, "t3:Acme/app:Fix the build");
         const checkout = NodePath.join(homeOf("new"), "work", "app");
         assert.equal(git(checkout, ["rev-parse", "HEAD"]), git(remote, ["rev-parse", "HEAD"]));
         assert.deepEqual(vmT3.decisions, [
@@ -2734,7 +2760,7 @@ describe("boat VM thread launch", () => {
         ).pipe(Effect.provide(layer));
 
         assert.equal(started.projectId, ProjectId.make("vm-project"));
-        assert.equal(record.targets[0]!.label, "vm Acme/app");
+        assert.equal(record.targets[0]!.label, "t3:Acme/app:Fix the build");
         const checkout = NodePath.join(homeOf("new"), "work", "app");
         assert.equal(git(checkout, ["rev-parse", "HEAD"]), git(remote, ["rev-parse", "HEAD"]));
         assert.deepEqual(

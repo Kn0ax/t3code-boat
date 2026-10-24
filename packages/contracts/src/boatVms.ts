@@ -26,8 +26,54 @@ export const BoatVmStatus = Schema.Literals([
 ]);
 export type BoatVmStatus = typeof BoatVmStatus.Type;
 
-/** Starts the label of every boat VM T3 makes; jobs' nodes and hand-added sandboxes have none. */
+/** Starts the label of every boat VM T3 made before VMs were named by `boatVmSandboxLabel`. */
 export const BOAT_VM_LABEL_PREFIX = "vm ";
+
+/**
+ * Starts the boat name of every boat VM T3 makes: `t3:<owner/name>[:<task>]`,
+ * which is also the label the boat adapter reads back. Jobs' nodes and
+ * hand-added sandboxes have neither prefix.
+ */
+export const BOAT_VM_NAME_PREFIX = "t3:";
+
+/** A VM's label for clients when it was launched without a repository. */
+export const BOAT_VM_SCRATCH_LABEL = "scratch";
+
+// The repository part of a no-project VM's boat name.
+const NO_PROJECT_NAME_PART = "no-project";
+
+/**
+ * The sandbox label (and boat name) of a VM for `repository` (`owner/name`,
+ * null without a project), naming the thread it was launched for when known.
+ * The repository part keeps the owner: saving a VM as a snapshot names the
+ * snapshot from it.
+ */
+export const boatVmSandboxLabel = (repository: string | null, task?: string): string => {
+  const named = task?.replace(/\s+/gu, " ").trim();
+  return `${BOAT_VM_NAME_PREFIX}${repository ?? NO_PROJECT_NAME_PART}${named ? `:${named}` : ""}`;
+};
+
+/**
+ * The client label and task of a VM T3 made, read from its sandbox label in
+ * either naming; null for any other sandbox. The label is empty for a legacy
+ * VM named by nothing else.
+ */
+export const parseBoatVmSandboxLabel = (
+  label: string,
+): { readonly label: string; readonly task?: string } | null => {
+  if (label.startsWith(BOAT_VM_LABEL_PREFIX)) {
+    return { label: label.slice(BOAT_VM_LABEL_PREFIX.length).trim() };
+  }
+  if (!label.startsWith(BOAT_VM_NAME_PREFIX)) return null;
+  const rest = label.slice(BOAT_VM_NAME_PREFIX.length);
+  const colon = rest.indexOf(":");
+  const repository = (colon === -1 ? rest : rest.slice(0, colon)).trim();
+  const task = colon === -1 ? "" : rest.slice(colon + 1).trim();
+  return {
+    label: repository === NO_PROJECT_NAME_PART ? BOAT_VM_SCRATCH_LABEL : repository,
+    ...(task === "" ? {} : { task }),
+  };
+};
 
 /** The VM's tailnet machine name, which is also the first label of its HTTPS origin. */
 export const boatVmTailnetHostname = (sandboxId: string): string =>
@@ -73,6 +119,8 @@ export const BoatVm = Schema.Struct({
   sandboxId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   status: BoatVmStatus,
+  /** The thread the VM was launched for, when its name records one. */
+  task: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type BoatVm = typeof BoatVm.Type;
 

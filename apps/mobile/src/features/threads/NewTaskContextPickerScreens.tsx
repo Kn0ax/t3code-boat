@@ -4,6 +4,7 @@ import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { NavigationRow } from "../../components/ui/NavigationRow";
+import type { BoatVmRunOnRow } from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { shouldCheckoutNewTaskBranch } from "./new-task-context-presentation";
 import type { VcsRef } from "@t3tools/client-runtime/state/vcs";
@@ -27,7 +28,7 @@ import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
-import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
+import { BoatVmSymbol, EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
@@ -54,6 +55,8 @@ import { environmentStatusText } from "../connection/environmentStatusText";
 function EnvironmentPickerRow(props: {
   environmentId: EnvironmentId;
   title: string;
+  /** Set when the machine is a paired boat VM. */
+  boatVmRow: BoatVmRunOnRow | undefined;
   selected: boolean;
   disabled: boolean;
   isLast: boolean;
@@ -64,28 +67,38 @@ function EnvironmentPickerRow(props: {
   const { diagnosis, state } = useConnectionDiagnosis(props.environmentId, presentation);
   const { onReconnectEnvironment } = useRemoteConnections();
   const connection = presentation?.connection;
-  const status =
+  const connectionStatus =
     diagnosis?.headline ??
     (connection ? environmentStatusText({ ...connection, error: null }) : "Offline");
+  // A paired boat VM says what it is while connected; otherwise why it is not.
+  const status =
+    props.boatVmRow !== undefined && connection?.phase === "connected"
+      ? props.boatVmRow.note
+      : connectionStatus;
+  const title = props.boatVmRow?.title ?? props.title;
   return (
     <View className={cn("bg-grouped-card", !props.isLast && "border-b border-border-subtle")}>
       <View className="flex-row items-center">
         <Pressable
           accessibilityRole="radio"
-          accessibilityLabel={`${props.title}, ${status}`}
+          accessibilityLabel={`${title}, ${status}`}
           accessibilityState={{ checked: props.selected }}
           disabled={props.disabled}
           onPress={props.onPress}
           className="min-h-16 flex-1 flex-row items-center gap-3 px-4 py-3 active:bg-subtle"
         >
-          <EnvironmentMachineSymbol
-            kind={resolveEnvironmentMachineKind(presentation?.serverConfig ?? null)}
-            size={20}
-            tintColorClassName="accent-icon-muted"
-          />
+          {props.boatVmRow !== undefined ? (
+            <BoatVmSymbol size={20} tintColorClassName="accent-icon-muted" />
+          ) : (
+            <EnvironmentMachineSymbol
+              kind={resolveEnvironmentMachineKind(presentation?.serverConfig ?? null)}
+              size={20}
+              tintColorClassName="accent-icon-muted"
+            />
+          )}
           <View className="min-w-0 flex-1 gap-1">
             <Text className="text-base font-t3-medium text-foreground" numberOfLines={1}>
-              {props.title}
+              {title}
             </Text>
             <View className="flex-row items-center gap-1.5">
               <ConnectionStatusDot state={connection?.phase ?? "offline"} pulse={false} size={6} />
@@ -100,7 +113,7 @@ function EnvironmentPickerRow(props: {
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${expanded ? "Hide" : "Show"} connection details for ${props.title}`}
+          accessibilityLabel={`${expanded ? "Hide" : "Show"} connection details for ${title}`}
           accessibilityState={{ expanded }}
           onPress={() => setExpanded(!expanded)}
           className="min-h-11 min-w-11 items-center justify-center active:opacity-65"
@@ -115,9 +128,9 @@ function EnvironmentPickerRow(props: {
       {expanded ? (
         <View className="gap-3 px-4 pb-4">
           {diagnosis ? (
-            <ConnectionDiagnosisDetails hostLabel={props.title} diagnosis={diagnosis} />
+            <ConnectionDiagnosisDetails hostLabel={title} diagnosis={diagnosis} />
           ) : (
-            <Text className="text-sm text-foreground-muted">{status}</Text>
+            <Text className="text-sm text-foreground-muted">{connectionStatus}</Text>
           )}
           {state.retryAt ? (
             <Text className="text-sm text-foreground-muted">
@@ -284,7 +297,7 @@ function BranchSelectionRow(props: {
 
 /** A boat VM to start, or "New boat VM"; picking it starts the VM and returns to the draft. */
 function BoatVmPickerRow(props: {
-  title: string;
+  row: BoatVmRunOnRow;
   disabledReason: string | undefined;
   disabled: boolean;
   isLast: boolean;
@@ -294,7 +307,7 @@ function BoatVmPickerRow(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={props.title}
+      accessibilityLabel={`${props.row.title}, ${props.row.note}`}
       accessibilityHint={props.disabledReason ?? "Starts the boat VM for this task"}
       accessibilityState={{ disabled: props.disabled || unavailable }}
       disabled={props.disabled || unavailable}
@@ -304,7 +317,7 @@ function BoatVmPickerRow(props: {
         !props.isLast && "border-b border-border-subtle",
       )}
     >
-      <EnvironmentMachineSymbol kind="cloud" size={20} tintColorClassName="accent-icon-muted" />
+      <BoatVmSymbol size={20} tintColorClassName="accent-icon-muted" />
       <View className="min-w-0 flex-1 gap-1">
         <Text
           className={cn(
@@ -313,13 +326,11 @@ function BoatVmPickerRow(props: {
           )}
           numberOfLines={1}
         >
-          {props.title}
+          {props.row.title}
         </Text>
-        {props.disabledReason !== undefined ? (
-          <Text className="text-xs text-foreground-muted" numberOfLines={3}>
-            {props.disabledReason}
-          </Text>
-        ) : null}
+        <Text className="text-xs text-foreground-muted" numberOfLines={3}>
+          {props.disabledReason ?? props.row.note}
+        </Text>
       </View>
     </Pressable>
   );
@@ -343,6 +354,10 @@ export function NewTaskEnvironmentPickerRouteScreen() {
   const flow = useNewTaskFlow();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // The draft keeps the VM list loaded while it is open, and boat stops idle
+  // VMs on its own, so the list can say a stopped VM still runs.
+  const { refreshBoatVms } = flow;
+  useEffect(() => refreshBoatVms(), [refreshBoatVms]);
   return (
     <View className="flex-1 bg-sheet" collapsable={false}>
       <NativeStackScreenOptions
@@ -370,10 +385,10 @@ export function NewTaskEnvironmentPickerRouteScreen() {
         >
           <PickerSurface>
             {flow.environments.map((environment, index) =>
-              environment.boatVm !== undefined ? (
+              environment.boatVm !== undefined && environment.boatVmRow !== undefined ? (
                 <BoatVmPickerRow
                   key={String(environment.environmentId)}
-                  title={environment.environmentLabel}
+                  row={environment.boatVmRow}
                   disabledReason={environment.disabledReason}
                   disabled={flow.switchingToEnvironmentId !== null}
                   isLast={index === flow.environments.length - 1}
@@ -398,6 +413,7 @@ export function NewTaskEnvironmentPickerRouteScreen() {
                   }}
                   selected={flow.selectedEnvironmentId === environment.environmentId}
                   title={environment.environmentLabel}
+                  boatVmRow={environment.boatVmRow}
                 />
               ),
             )}

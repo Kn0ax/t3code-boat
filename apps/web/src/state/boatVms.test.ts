@@ -12,6 +12,8 @@ const machine = (id: string, label: string): EnvironmentOption => ({
   machine: "cloud",
 });
 
+const newVm = { scratch: false };
+
 describe("boatVmRunOnOptions", () => {
   it("removes deleted snapshot connections when the refreshed inventory changes", () => {
     const environments = [machine("local", "Laptop"), machine("vm", "snapshot")];
@@ -23,12 +25,12 @@ describe("boatVmRunOnOptions", () => {
     });
     const running = { sandboxId: "bx_run", label: "sample/app", status: "running" as const };
     expect(
-      boatVmRunOnOptions(environments, [running], hostnameOf, undefined, inventory(["bx_run"])).map(
+      boatVmRunOnOptions(environments, [running], hostnameOf, newVm, inventory(["bx_run"])).map(
         (x) => x.environmentId,
       ),
     ).toEqual(["local", "vm", "boat-vm:new"]);
     expect(
-      boatVmRunOnOptions(environments, [], hostnameOf, undefined, inventory([])).map(
+      boatVmRunOnOptions(environments, [], hostnameOf, newVm, inventory([])).map(
         (x) => x.environmentId,
       ),
     ).toEqual(["local", "boat-vm:new"]);
@@ -44,18 +46,14 @@ describe("boatVmRunOnOptions", () => {
     const pairedVmOf = (id: EnvironmentId) =>
       id === "present" || id === "gone" ? { sandboxId: `bx_${id}`, owned: true } : null;
     expect(
-      boatVmRunOnOptions(environments, [], () => null, undefined, {
+      boatVmRunOnOptions(environments, [], () => null, newVm, {
         sandboxIds: ["bx_present"],
         pairedVmOf,
       }).map((x) => x.environmentId),
     ).toEqual(["local", "present", "desktop", "boat-vm:new"]);
-    expect(boatVmRunOnOptions(environments, [], () => null).map((x) => x.environmentId)).toEqual([
-      "local",
-      "present",
-      "gone",
-      "desktop",
-      "boat-vm:new",
-    ]);
+    expect(
+      boatVmRunOnOptions(environments, [], () => null, newVm).map((x) => x.environmentId),
+    ).toEqual(["local", "present", "gone", "desktop", "boat-vm:new"]);
   });
 
   it("matches a recorded VM by its ID, whichever environment launched it", () => {
@@ -67,12 +65,12 @@ describe("boatVmRunOnOptions", () => {
       ],
       // A relayed machine's URL names the environment that launched it.
       () => "snapshot-bx-host",
-      undefined,
+      newVm,
       { sandboxIds: [], pairedVmOf: () => ({ sandboxId: "bx_run", owned: false }) },
     );
     expect(options.map((option) => [option.environmentId, option.label])).toEqual([
-      ["relayed", "boat: sample/app"],
-      ["boat-vm:bx_host", "boat: host"],
+      ["relayed", "sample/app"],
+      ["boat-vm:bx_host", "host"],
       ["boat-vm:new", "New boat VM"],
     ]);
   });
@@ -93,7 +91,7 @@ describe("boatVmRunOnOptions", () => {
       ],
       [],
       (environmentId) => hostnames[environmentId] ?? null,
-      undefined,
+      newVm,
       { sandboxIds: ["bx_cli"], pairedVmOf: () => null },
     );
     expect(options.map((option) => option.environmentId)).toEqual(["cli", "other", "boat-vm:new"]);
@@ -111,11 +109,14 @@ describe("boatVmRunOnOptions", () => {
         { sandboxId: "bx_stop", label: "sample/app", status: "stopped" },
       ],
       (environmentId) => hostnames[environmentId] ?? null,
+      newVm,
     );
-    expect(options.map((option) => [option.environmentId, option.label])).toEqual([
-      ["running", "boat: sample/app"],
-      ["boat-vm:bx_stop", "boat: sample/app (stopped)"],
-      ["boat-vm:new", "New boat VM"],
+    expect(
+      options.map((option) => [option.environmentId, option.label, option.boatVmNote]),
+    ).toEqual([
+      ["running", "sample/app", "Boat VM · running"],
+      ["boat-vm:bx_stop", "sample/app", "Boat VM · stopped, starts when picked"],
+      ["boat-vm:new", "New boat VM", "Creates a cloud VM for this repo"],
     ]);
   });
 
@@ -137,14 +138,17 @@ describe("boatVmRunOnOptions", () => {
         { sandboxId: "bx_stop", label: "acme/app", status: "stopped" },
       ],
       (environmentId) => hostnames[environmentId] ?? null,
+      { scratch: true },
     );
 
     expect(options.map((option) => [option.environmentId, option.label])).toEqual([
       ["laptop", "Laptop"],
-      ["running", "boat: acme/app"],
+      ["running", "acme/app"],
       ["deleted", "box-node-3"],
-      ["boat-vm:bx_stop", "boat: acme/app (stopped)"],
+      ["boat-vm:bx_stop", "acme/app"],
       ["boat-vm:new", "New boat VM"],
     ]);
+    expect(options.at(-1)?.boatVmNote).toBe("Creates a cloud VM with no project");
+    expect(options[0]?.boatVmNote).toBeUndefined();
   });
 });

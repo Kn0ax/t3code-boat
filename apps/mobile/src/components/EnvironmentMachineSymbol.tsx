@@ -36,3 +36,19 @@ export function EnvironmentMachineSymbol(props: {
     />
   );
 }
+
+/** Marks a boat VM, in place of the machine kind it would otherwise show. */
+export function BoatVmSymbol(props: {
+  readonly size: number;
+  readonly tintColorClassName: string;
+}) {
+  return (
+    <SymbolView
+      accessibilityLabel="Boat VM"
+      name="b.square"
+      size={props.size}
+      tintColorClassName={props.tintColorClassName}
+      type="monochrome"
+    />
+  );
+}

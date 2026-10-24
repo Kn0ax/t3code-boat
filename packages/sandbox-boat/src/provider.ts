@@ -6,8 +6,9 @@
  * The API maps closely onto the contract, with these differences:
  *
  * - `create` takes no name, so the adapter renames the new sandbox to
- *   `BOAT_SANDBOX_NAME_PREFIX` + label; `list` returns only sandboxes named
- *   that way that the caller owns, so the account's other sandboxes (and, in
+ *   `BOAT_SANDBOX_NAME_PREFIX` + label, or to a label that is already a T3
+ *   name (`t3:…`, as boat VMs' are); `list` returns only sandboxes named
+ *   either way that the caller owns, so the account's other sandboxes (and, in
  *   an organization's scope, teammates' ones) stay out of T3. Idempotency is
  *   boat's own `Idempotency-Key`, so a retried create (lost response, 5xx,
  *   or a click while the first is still minting) answers with the same

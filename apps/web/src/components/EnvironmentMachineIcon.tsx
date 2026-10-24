@@ -1,6 +1,7 @@
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
 import type { FunctionComponent, SVGProps } from "react";
+import type { EnvironmentOption } from "./BranchToolbar.logic";
 import { LinuxIcon } from "./Icons";
 
 function LucideLike(props: SVGProps<SVGSVGElement>) {
@@ -38,6 +39,16 @@ function MacStudioIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/** The boat mark: a rounded square with a B, for boat VMs. */
+function BoatVmIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <LucideLike {...props}>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M10 16h2a2 2 0 1 0 0-4h-2h2a2 2 0 1 0 0-4h-2v8z" />
+    </LucideLike>
+  );
+}
+
 const ICON_BY_KIND: Record<EnvironmentMachineKind, FunctionComponent<LucideProps>> = {
   server: ServerIcon,
   cloud: CloudIcon,
@@ -70,4 +81,16 @@ export function EnvironmentMachineIcon({
 }: LucideProps & { readonly kind: EnvironmentMachineKind }) {
   const Icon = ICON_BY_KIND[kind];
   return <Icon {...props} />;
+}
+
+/** A "Run on" entry's icon: the boat mark for a boat VM, else its machine kind. */
+export function EnvironmentOptionIcon(props: {
+  readonly option: Pick<EnvironmentOption, "machine" | "boatVmNote"> | null;
+  readonly className: string;
+}) {
+  return props.option?.boatVmNote !== undefined ? (
+    <BoatVmIcon aria-label="Boat VM" className={props.className} />
+  ) : (
+    <EnvironmentMachineIcon kind={props.option?.machine ?? "server"} className={props.className} />
+  );
 }

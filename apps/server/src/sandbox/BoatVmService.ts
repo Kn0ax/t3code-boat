@@ -12,7 +12,8 @@
  * @module BoatVmService
  */
 import {
-  BOAT_VM_LABEL_PREFIX,
+  BOAT_VM_SCRATCH_LABEL,
+  boatVmSandboxLabel,
   BoatVmError,
   boatVmSnapshotName,
   boatVmThreadCopyOrigin,
@@ -41,6 +42,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type OrchestrationProjectShell,
   OrchestrationV2ThreadImportInput,
+  parseBoatVmSandboxLabel,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -274,9 +276,6 @@ const SCRATCH_SCRIPT = `set -eu
 mkdir -p "$HOME/.t3/scratch"
 printf '%s\\n' "$HOME/.t3/scratch"
 `;
-
-/** The label and progress name of a VM launched without a repository. */
-const SCRATCH_VM_NAME = "scratch";
 
 const SYNC_WARNINGS: Readonly<Record<string, (name: string) => string>> = {
   dirty: (name) =>
@@ -657,6 +656,8 @@ const repositoryOf = (
       };
 
 /** A copy here whose VM was deleted, continued on the VM a launch makes. */
+type LaunchInput = BoatVmLaunchInput & { readonly task?: string };
+
 interface Continuation {
   /** The copy's origin key; the thread on the new VM is imported under it. */
   readonly originKey: string;
@@ -836,7 +837,8 @@ export class BoatVmService extends Context.Service<
   BoatVmService,
   {
     readonly list: Effect.Effect<BoatVmListResult, BoatVmError>;
-    readonly launch: (input: BoatVmLaunchInput) => Effect.Effect<BoatVmLaunchResult, BoatVmError>;
+    /** `task` names the thread a new VM is for in boat's dashboard. */
+    readonly launch: (input: LaunchInput) => Effect.Effect<BoatVmLaunchResult, BoatVmError>;
     /**
      * Launches a VM for `repository`, else this environment's project (null:
      * none), as `launch` does, then starts a thread with `message` in the
@@ -1012,7 +1014,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     );
 
   const onlyVms = (sandboxes: ReadonlyArray<SandboxInfo>) =>
-    sandboxes.filter((sandbox) => sandbox.label.startsWith(BOAT_VM_LABEL_PREFIX));
+    sandboxes.filter((sandbox) => parseBoatVmSandboxLabel(sandbox.label) !== null);
   const listVms = (provider: SandboxProviderShape) => provider.list().pipe(Effect.map(onlyVms));
 
   const list: BoatVmService["Service"]["list"] = Effect.scoped(
@@ -1029,11 +1031,15 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         sandboxIds: sandboxes
           .filter((sandbox) => sandbox.status !== "destroyed")
           .map((sandbox) => sandbox.ref.sandboxId),
-        vms: vms.map((vm) => ({
-          sandboxId: vm.ref.sandboxId,
-          label: vm.label.slice(BOAT_VM_LABEL_PREFIX.length).trim() || vm.ref.sandboxId,
-          status: vm.status,
-        })),
+        vms: vms.map((vm) => {
+          const named = parseBoatVmSandboxLabel(vm.label);
+          return {
+            sandboxId: vm.ref.sandboxId,
+            label: named?.label || vm.ref.sandboxId,
+            status: vm.status,
+            ...(named?.task === undefined ? {} : { task: named.task }),
+          };
+        }),
       };
     }),
   ).pipe(
@@ -1045,15 +1051,16 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   const provision = Effect.fn("BoatVmService.provision")(function* (
     provider: SandboxProviderShape,
     settings: SandboxJobSettings,
-    input: BoatVmLaunchInput,
+    input: LaunchInput,
   ) {
     const attempt = yield* crypto.randomUUIDv4();
     const repository = input.repository;
-    const label = `${BOAT_VM_LABEL_PREFIX}${
+    const label = boatVmSandboxLabel(
       repository === undefined
-        ? SCRATCH_VM_NAME
-        : `${repository.owner === undefined ? "" : `${repository.owner}/`}${repository.name}`
-    }`;
+        ? null
+        : `${repository.owner === undefined ? "" : `${repository.owner}/`}${repository.name}`,
+      input.task,
+    );
     const baseSnapshot = settings.boatVmBaseSnapshot.trim();
     const repositorySnapshot =
       repository === undefined ? undefined : boatVmSnapshotName(repository);
@@ -1274,7 +1281,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   });
 
   const runLaunch = (
-    input: BoatVmLaunchInput,
+    input: LaunchInput,
     report: (progress: Partial<BoatVmLaunches.BoatVmLaunchProgress>) => Effect.Effect<void>,
     continuation?: Continuation,
   ) => {
@@ -1483,11 +1490,10 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           yield* linkToManager(boat, bootstrap.ref);
         }
 
+        const named = parseBoatVmSandboxLabel(label);
         return {
           sandboxId: bootstrap.ref.sandboxId,
-          label: label.startsWith(BOAT_VM_LABEL_PREFIX)
-            ? label.slice(BOAT_VM_LABEL_PREFIX.length).trim() || bootstrap.ref.sandboxId
-            : label,
+          label: named === null ? label : named.label || bootstrap.ref.sandboxId,
           httpBaseUrl: bootstrap.httpBaseUrl,
           pairingCode: bootstrap.pairingToken,
           workspaceRoot,
@@ -1575,13 +1581,14 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         requested.continueThreadId === undefined
           ? undefined
           : yield* prepareContinuation(requested.continueThreadId, requested.message);
-      const input: BoatVmLaunchInput =
+      const input: LaunchInput =
         continuing === undefined
           ? requested
           : {
               ...(requested.transport === undefined ? {} : { transport: requested.transport }),
               ...(requested.launchId === undefined ? {} : { launchId: requested.launchId }),
               ...(continuing.repository === undefined ? {} : { repository: continuing.repository }),
+              task: continuing.continuation.snapshot.projection.thread.title,
             };
       const launchId =
         input.launchId ??
@@ -1590,7 +1597,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           .pipe(Effect.mapError(() => vmError("Could not start the boat VM launch."))));
       const began = yield* launchTracker.begin(
         launchId,
-        input.repository?.name ?? SCRATCH_VM_NAME,
+        input.repository?.name ?? BOAT_VM_SCRATCH_LABEL,
         input.sandboxId === undefined
           ? { stage: "creating" }
           : { stage: "resuming", sandboxId: input.sandboxId },
@@ -1666,6 +1673,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     const launched = yield* launch({
       ...(sandboxId === undefined ? {} : { sandboxId }),
       ...(repository === undefined ? {} : { repository }),
+      task: thread.title,
     });
 
     const ref: SandboxRef = { providerId: "boat", sandboxId: launched.sandboxId };
@@ -1871,7 +1879,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         const provider = yield* requireProvider(settings);
         const ref: SandboxRef = { providerId: "boat", sandboxId: input.sandboxId };
         const vm = yield* provider.get(ref);
-        if (!vm.label.startsWith(BOAT_VM_LABEL_PREFIX)) {
+        if (parseBoatVmSandboxLabel(vm.label) === null) {
           return yield* vmError("That sandbox is not a boat VM T3 Code made.");
         }
         if (vm.status === "destroyed") {

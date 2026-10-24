@@ -1,4 +1,5 @@
 import {
+  BOAT_VM_SCRATCH_LABEL,
   boatVmLaunchProgressSummary,
   boatVmMatchesTailnetHostname,
   boatVmThreadCopyOrigin,
@@ -53,8 +54,12 @@ export function boatVmDraftLaunch(input: {
   return input.isScratch ? "scratch" : boatVmRepositoryOf(input.project.repositoryIdentity);
 }
 
+/** What a boat VM is called: its repository, or "No project" for one launched without. */
+const boatVmTitle = (vmLabel: string): string =>
+  vmLabel === BOAT_VM_SCRATCH_LABEL ? "No project" : vmLabel;
+
 /** How a paired boat VM is named wherever its environment shows. */
-export const boatVmEnvironmentLabel = (vmLabel: string): string => `boat: ${vmLabel}`;
+export const boatVmEnvironmentLabel = (vmLabel: string): string => `boat: ${boatVmTitle(vmLabel)}`;
 
 /**
  * What a saved environment says about being a boat VM: the VM recorded when it
@@ -253,7 +258,10 @@ export function boatVmRunOnChoices<
       environmentId: EnvironmentId,
     ) => { readonly sandboxId: string; readonly owned: boolean } | null;
   },
-): { readonly machines: T[]; readonly vms: BoatVm[] } {
+): {
+  readonly machines: Array<T & { readonly pairedBoatVm?: BoatVm }>;
+  readonly vms: BoatVm[];
+} {
   const live = vms.filter((vm) => vm.status !== "destroyed" && vm.status !== "error");
   const sandboxIds = new Set(inventory?.sandboxIds);
   const paired = new Set<string>();
@@ -275,14 +283,49 @@ export function boatVmRunOnChoices<
     }
     if (vm.status !== "running") return [];
     paired.add(vm.sandboxId);
-    return [{ ...environment, label: boatVmEnvironmentLabel(vm.label) }];
+    return [{ ...environment, label: boatVmEnvironmentLabel(vm.label), pairedBoatVm: vm }];
   });
   return { machines, vms: live.filter((vm) => !paired.has(vm.sandboxId)) };
 }
 
-/** A boat VM's Run on entry: its label, and whether picking it resumes it. */
-export const boatVmRunOnLabel = (vm: BoatVm): string =>
-  `${boatVmEnvironmentLabel(vm.label)}${vm.status === "running" ? "" : " (stopped)"}`;
+/** A boat VM row in "Run on": what it is called, and a line on what it is and what picking it does. */
+export interface BoatVmRunOnRow {
+  readonly title: string;
+  readonly note: string;
+}
+
+const BOAT_VM_STATE_NOTES: Record<BoatVm["status"], string> = {
+  creating: "starting",
+  running: "running",
+  stopping: "stopped, starts when picked",
+  stopped: "stopped, starts when picked",
+  error: "unavailable",
+  destroyed: "deleted",
+};
+
+/**
+ * How "Run on" shows boat VM `vm`, or "New boat VM" when `vm` is null,
+ * which makes a VM for the draft's repository or, for a `scratch` draft,
+ * none.
+ */
+export function boatVmRunOnRow(
+  vm: Pick<BoatVm, "label" | "status" | "task"> | null,
+  options: { readonly scratch?: boolean } = {},
+): BoatVmRunOnRow {
+  if (vm === null) {
+    return {
+      title: "New boat VM",
+      note: options.scratch
+        ? "Creates a cloud VM with no project"
+        : "Creates a cloud VM for this repo",
+    };
+  }
+  const note = `Boat VM · ${BOAT_VM_STATE_NOTES[vm.status]}`;
+  return {
+    title: boatVmTitle(vm.label),
+    note: vm.task === undefined ? note : `${note} · ${vm.task}`,
+  };
+}
 
 interface HostCandidate {
   readonly environmentId: EnvironmentId;

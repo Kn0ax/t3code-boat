@@ -6,8 +6,9 @@ import {
   boatVmPairingInput,
   boatVmPairingOf,
   boatVmRunOnChoices,
-  boatVmRunOnLabel,
+  boatVmRunOnRow,
   type BoatVmPairing,
+  type BoatVmRunOnRow,
 } from "@t3tools/client-runtime/boat-vms";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { createBoatVmEnvironmentAtoms } from "@t3tools/client-runtime/state/boat-vms";
@@ -34,6 +35,7 @@ import { inferProjectTitleFromPath } from "../lib/projectPaths";
 import { isElectron } from "../env";
 import { newProjectId, randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { useBoatVmHostEnvironmentId } from "./boatVmHost";
 import { readBoatVmLaunch, startBoatVmLaunch, updateBoatVmLaunch } from "./boatVmLaunches";
 import { readProjects, readThreadShell, waitForProject } from "./entities";
 import { environmentPresentations } from "./presentation";
@@ -91,34 +93,61 @@ export function useBoatVmEnvironmentLabels(vms: ReadonlyArray<BoatVm> | undefine
   }, [vms]);
 }
 
-/** "Run on" with the boat VMs folded in, as boatVmRunOnChoices picks them, and "New boat VM". */
+/**
+ * Lists the boat VMs again when "Run on" opens on entries for them: views keep
+ * the list loaded, and boat stops idle VMs on its own, so it can say a stopped
+ * VM still runs.
+ */
+export function useRefreshBoatVmsOnOpen(
+  environments: ReadonlyArray<EnvironmentOption> | undefined,
+): (open: boolean) => void {
+  const hostId = useBoatVmHostEnvironmentId();
+  return (open) => {
+    if (!open || hostId === null) return;
+    if (!environments?.some((environment) => environment.boatVmNote !== undefined)) return;
+    appAtomRegistry.refresh(boatVmEnvironment.list({ environmentId: hostId, input: {} }));
+  };
+}
+
+/**
+ * "Run on" with the boat VMs folded in, as boatVmRunOnChoices picks them, and
+ * "New boat VM" for a draft in a repository or, `scratch`, without a project.
+ */
 export function boatVmRunOnOptions(
   environments: ReadonlyArray<EnvironmentOption>,
   vms: ReadonlyArray<BoatVm>,
   hostnameOf: (environmentId: EnvironmentId) => string | null,
-  newVmDisabledReason?: string,
+  newVm: { readonly disabledReason?: string | undefined; readonly scratch: boolean },
   inventory?: Parameters<typeof boatVmRunOnChoices>[3],
 ): EnvironmentOption[] {
   const choices = boatVmRunOnChoices(environments, vms, hostnameOf, inventory);
   return [
-    ...choices.machines,
-    ...choices.vms.map((vm) => entry(vm.sandboxId, boatVmRunOnLabel(vm))),
-    newBoatVmEntry(newVmDisabledReason),
+    ...choices.machines.map(({ pairedBoatVm, ...machine }) => {
+      if (pairedBoatVm === undefined) return machine;
+      const row = boatVmRunOnRow(pairedBoatVm);
+      return { ...machine, label: row.title, boatVmNote: row.note };
+    }),
+    ...choices.vms.map((vm) => entry(vm.sandboxId, boatVmRunOnRow(vm))),
+    newBoatVmEntry(newVm.disabledReason, newVm.scratch),
   ];
 }
 
-const entry = (sandboxId: string | null, label: string): EnvironmentOption => ({
+const entry = (sandboxId: string | null, row: BoatVmRunOnRow): EnvironmentOption => ({
   environmentId: EnvironmentId.make(`boat-vm:${sandboxId ?? "new"}`),
   projectId: null,
-  label,
+  label: row.title,
   isPrimary: false,
   machine: "cloud",
   boatVm: { sandboxId },
+  boatVmNote: row.note,
 });
 
 /** The "New boat VM" entry, shown with the reason when it cannot be used. */
-export const newBoatVmEntry = (disabledReason?: string): EnvironmentOption => ({
-  ...entry(null, "New boat VM"),
+export const newBoatVmEntry = (
+  disabledReason: string | undefined,
+  scratch: boolean,
+): EnvironmentOption => ({
+  ...entry(null, boatVmRunOnRow(null, { scratch })),
   ...(disabledReason === undefined ? {} : { disabledReason }),
 });
 

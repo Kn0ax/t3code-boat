@@ -16,7 +16,8 @@ import type {
 import {
   boatVmDraftLaunch,
   boatVmRunOnChoices,
-  boatVmRunOnLabel,
+  boatVmRunOnRow,
+  type BoatVmRunOnRow,
 } from "@t3tools/client-runtime/boat-vms";
 import {
   CommandId,
@@ -182,13 +183,16 @@ type NewTaskEnvironment = {
   readonly environmentLabel: string;
   /** A boat VM to start, or a new one (`sandboxId` null); its id is not an environment's. */
   readonly boatVm?: { readonly sandboxId: string | null };
+  /** How the row shows a boat VM, whether to start or already paired. */
+  readonly boatVmRow?: BoatVmRunOnRow;
   readonly disabledReason?: string;
 };
 
-const boatVmEntry = (sandboxId: string | null, label: string): NewTaskEnvironment => ({
+const boatVmEntry = (sandboxId: string | null, row: BoatVmRunOnRow): NewTaskEnvironment => ({
   environmentId: EnvironmentId.make(`boat-vm:${sandboxId ?? "new"}`),
-  environmentLabel: label,
+  environmentLabel: row.title,
   boatVm: { sandboxId },
+  boatVmRow: row,
 });
 
 type NewTaskFlowContextValue = {
@@ -241,6 +245,8 @@ type NewTaskFlowContextValue = {
   readonly selectEnvironment: (environmentId: EnvironmentId) => void;
   readonly switchEnvironment: (environmentId: EnvironmentId) => Promise<boolean>;
   readonly switchingToEnvironmentId: EnvironmentId | null;
+  /** Lists the boat VMs again; a VM may have stopped since the list loaded. */
+  readonly refreshBoatVms: () => void;
   readonly setSelectedModelKey: (
     key: string | null,
     options?: ReadonlyArray<ProviderOptionSelection>,
@@ -481,7 +487,7 @@ export function NewTaskFlowProvider(
           ? "This project has no Git remote T3 recognizes."
           : undefined;
   const newBoatVm = (): NewTaskEnvironment => ({
-    ...boatVmEntry(null, "New boat VM"),
+    ...boatVmEntry(null, boatVmRunOnRow(null, { scratch: isScratchDraft })),
     ...(newBoatVmDisabledReason === undefined ? {} : { disabledReason: newBoatVmDisabledReason }),
   });
   const environments = ((): ReadonlyArray<NewTaskEnvironment> => {
@@ -511,11 +517,12 @@ export function NewTaskFlowProvider(
           },
     );
     return [
-      ...choices.machines.map(({ label, ...environment }) => ({
+      ...choices.machines.map(({ label, pairedBoatVm, ...environment }) => ({
         ...environment,
         environmentLabel: label,
+        ...(pairedBoatVm === undefined ? {} : { boatVmRow: boatVmRunOnRow(pairedBoatVm) }),
       })),
-      ...choices.vms.map((vm) => boatVmEntry(vm.sandboxId, boatVmRunOnLabel(vm))),
+      ...choices.vms.map((vm) => boatVmEntry(vm.sandboxId, boatVmRunOnRow(vm))),
       newBoatVm(),
     ];
   })();
@@ -1348,6 +1355,7 @@ export function NewTaskFlowProvider(
     selectEnvironment,
     switchEnvironment,
     switchingToEnvironmentId,
+    refreshBoatVms: boatVms.refresh,
     setSelectedModelKey,
     setWorkspaceMode,
     selectBranch,

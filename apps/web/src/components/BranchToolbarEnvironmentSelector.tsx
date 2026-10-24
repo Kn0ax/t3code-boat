@@ -9,8 +9,9 @@ import { PlusIcon, ScaleIcon } from "lucide-react";
 import { memo } from "react";
 
 import { ADD_TO_MACHINE_LABEL_CLASS, type EnvironmentOption } from "./BranchToolbar.logic";
-import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
+import { EnvironmentOptionIcon } from "./EnvironmentMachineIcon";
 import { useComposerMenuProps } from "./chat/composerEventScope";
+import { useRefreshBoatVmsOnOpen } from "../state/boatVms";
 import {
   Select,
   SelectGroup,
@@ -51,6 +52,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   );
   const activeEnvironment =
     availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
+  const refreshBoatVms = useRefreshBoatVmsOnOpen(availableEnvironments);
 
   const environmentItems = [
     ...(onAutoEnvironment
@@ -74,10 +76,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         className="inline-flex h-7 min-w-0 max-w-full items-center gap-1 border border-transparent px-1.75 font-normal text-muted-foreground/70 text-xs sm:h-6"
         data-composer-context-control
       >
-        <EnvironmentMachineIcon
-          kind={activeEnvironment?.machine ?? "server"}
-          className="size-3 shrink-0"
-        />
+        <EnvironmentOptionIcon option={activeEnvironment} className="size-3 shrink-0" />
         <ComposerContextLabel>{activeEnvironment?.label ?? "Run on"}</ComposerContextLabel>
       </span>
     );
@@ -92,6 +91,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   return (
     <Select
       modal={false}
+      onOpenChange={refreshBoatVms}
       value={autoEnvironmentLabel ? AUTO_VALUE : environmentValue(environmentId)}
       onValueChange={(value) => {
         if (value === ADD_MACHINE_VALUE) {
@@ -119,10 +119,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
           {autoEnvironmentLabel ? (
             <ScaleIcon className="size-3 shrink-0" aria-hidden="true" />
           ) : (
-            <EnvironmentMachineIcon
-              kind={activeEnvironment?.machine ?? "server"}
-              className="size-3 shrink-0"
-            />
+            <EnvironmentOptionIcon option={activeEnvironment} className="size-3 shrink-0" />
           )}
           <ComposerContextLabel>
             <SelectValue />
@@ -160,11 +157,13 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
             >
               <span className="flex flex-col">
                 <span className="inline-flex items-center gap-1.5">
-                  <EnvironmentMachineIcon kind={env.machine} className="size-3" />
+                  <EnvironmentOptionIcon option={env} className="size-3" />
                   {env.label}
                 </span>
-                {env.disabledReason !== undefined ? (
-                  <span className="text-muted-foreground text-xs">{env.disabledReason}</span>
+                {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
+                  <span className="text-muted-foreground text-xs">
+                    {env.disabledReason ?? env.boatVmNote}
+                  </span>
                 ) : null}
               </span>
             </SelectItem>
