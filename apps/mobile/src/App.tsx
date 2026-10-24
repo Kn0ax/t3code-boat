@@ -20,6 +20,7 @@ import {
 } from "./features/settings/appearance/AppearancePreferencesProvider";
 import { RootStack } from "./Stack";
 import { appAtomRegistry } from "./state/atom-registry";
+import { useBoatVmSavedEnvironments } from "./state/boatVms";
 import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-drafts";
 import { environmentThreadShells } from "./state/threads";
 import { environmentShell } from "./state/shell";
@@ -84,6 +85,11 @@ export default function App() {
   );
 }
 
+function BoatVmSavedEnvironmentsSync() {
+  useBoatVmSavedEnvironments();
+  return null;
+}
+
 function AppContent() {
   const { themeAppearance } = useAppearancePreferences();
   const navigationTheme = useMobileNavigationTheme();
@@ -92,6 +98,7 @@ function AppContent() {
     <>
       <SplashScreenCoordinator />
       <SubscriptionUsageCoordinator />
+      <BoatVmSavedEnvironmentsSync />
       <PermissionUpdateNotice />
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>

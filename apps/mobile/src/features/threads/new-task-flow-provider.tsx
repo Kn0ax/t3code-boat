@@ -59,7 +59,6 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import {
   boatVmEnvironment,
   launchBoatVm,
-  useBoatVmEnvironmentLabels,
   useBoatVmHostEnvironmentId,
   useBoatVmPairings,
 } from "../../state/boatVms";
@@ -478,7 +477,6 @@ export function NewTaskFlowProvider(
       ? null
       : boatVmEnvironment.list({ environmentId: boatVmHostId, input: {} }),
   );
-  useBoatVmEnvironmentLabels(boatVms.data?.available === true ? boatVms.data.vms : undefined);
   const boatVmPairingFor = (environmentId: EnvironmentId) =>
     boatVmPairings.find((pairing) => pairing.environmentId === environmentId) ?? null;
   const boatVmHostLabel =

@@ -17,7 +17,6 @@ import {
 } from "@t3tools/client-runtime/boat-vms";
 import {
   boatVmEnvironment,
-  useBoatVmEnvironmentLabels,
   useBoatVmPairings,
   useContinueBoatVmCopy,
   type useLaunchBoatVm,
@@ -66,7 +65,6 @@ export function useBoatVmCopy(input: {
   const vms = useEnvironmentQuery(
     hostId === null ? null : boatVmEnvironment.list({ environmentId: hostId, input: {} }),
   );
-  useBoatVmEnvironmentLabels(vms.data?.available === true ? vms.data.vms : undefined);
   const route =
     thread === null
       ? null

@@ -226,7 +226,6 @@ import {
   boatVmEnvironment,
   boatVmRunOnOptions,
   newBoatVmEntry,
-  useBoatVmEnvironmentLabels,
   useLaunchBoatVm,
 } from "../state/boatVms";
 import { useBoatVmHostEnvironmentId } from "../state/boatVmHost";
@@ -1177,7 +1176,6 @@ export default function ChatView(props: ChatViewProps) {
       ? null
       : boatVmEnvironment.list({ environmentId: boatVmManagingHostId, input: {} }),
   );
-  useBoatVmEnvironmentLabels(boatVms.data?.available === true ? boatVms.data.vms : undefined);
   const boatVmPairingFor = (environmentId: EnvironmentId) => {
     const entry = environmentById.get(environmentId)?.entry;
     return entry === undefined ? null : boatVmPairingOf(entry);

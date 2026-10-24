@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   boatVmCapableEnvironmentIds,
+  boatVmConnectionUpdates,
   boatVmCopyTarget,
   boatVmLabelUpdates,
   boatVmPairingInput,
@@ -44,6 +45,7 @@ import { appAtomRegistry } from "./atom-registry";
 import { useServerConfigs, waitForProject } from "./entities";
 import { environmentPresentations } from "./presentation";
 import { environmentProjects, projectEnvironment } from "./projects";
+import { useEnvironmentQuery } from "./query";
 import { environmentSession, readEnvironmentScope, useEnvironmentsWithScope } from "./session";
 import { environmentThreadShells } from "./threads";
 import { useRemoteConnectionStatus } from "./use-remote-environment-registry";
@@ -121,20 +123,71 @@ export function readBoatVmCopyThread(thread: EnvironmentThreadShell): Environmen
     : (appAtomRegistry.get(environmentThreadShells.threadShellAtom(target)) ?? thread);
 }
 
+const reconciledBoatVmStatuses = new Map<EnvironmentId, BoatVm["status"]>();
+
 /**
- * Names saved VM environments after their VM once the managing host's VM list
- * has loaded; it fetches nothing itself.
+ * Keeps saved VM environments in step with the managing host's VM list: named
+ * after their VM, switched off while it is stopped, and removed once boat
+ * deleted it (boatVmConnectionUpdates). It lists the VMs only while a VM is
+ * saved here, and again when one stops answering, since boat stops idle VMs on
+ * its own.
  */
-export function useBoatVmEnvironmentLabels(vms: ReadonlyArray<BoatVm> | undefined): void {
+export function useBoatVmSavedEnvironments(): void {
+  const hostId = useBoatVmHostEnvironmentId(null);
+  const pairings = useBoatVmPairings();
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const vmIds = pairings
+    .filter(
+      (pairing) =>
+        pairing.recorded !== null ||
+        (pairing.hostname !== null && isBoatVmTailnetHostname(pairing.hostname)),
+    )
+    .map((pairing) => pairing.environmentId);
+  const vmsQuery = useEnvironmentQuery(
+    hostId === null || vmIds.length === 0
+      ? null
+      : boatVmEnvironment.list({ environmentId: hostId, input: {} }),
+  );
+  const vms = vmsQuery.data?.available === true ? vmsQuery.data.vms : undefined;
+  const failingKey = vmIds
+    .filter((id) => {
+      const phase = presentations.get(id)?.connection.phase;
+      return phase === "reconnecting" || phase === "error";
+    })
+    .join(",");
+
   useEffect(() => {
-    if (vms === undefined) return;
+    if (hostId === null || failingKey === "") return;
+    appAtomRegistry.refresh(boatVmEnvironment.list({ environmentId: hostId, input: {} }));
+  }, [hostId, failingKey]);
+
+  // Only a new list reconciles: a VM paired since the last one is not on it yet.
+  useEffect(() => {
+    if (hostId === null || vms === undefined) return;
     const { entries } = appAtomRegistry.get(environmentCatalog.catalogValueAtom);
     for (const update of boatVmLabelUpdates(entries.values(), vms)) {
       void runAtomCommand(appAtomRegistry, environmentCatalog.setLabel, update, {
         reportFailure: false,
       });
     }
-  }, [vms]);
+    for (const { type, environmentId } of boatVmConnectionUpdates(
+      entries.values(),
+      vms,
+      hostId,
+      reconciledBoatVmStatuses,
+    )) {
+      void (type === "remove"
+        ? runAtomCommand(appAtomRegistry, environmentCatalog.remove, environmentId, {
+            reportFailure: false,
+          })
+        : runAtomCommand(
+            appAtomRegistry,
+            environmentCatalog.setEnabled,
+            { environmentId, enabled: type === "enable" },
+            { reportFailure: false },
+          ));
+    }
+  }, [hostId, vms]);
 }
 
 /** Launches by composer: a new-task draft key or a scoped thread key. */
@@ -242,6 +295,13 @@ async function launchAndPair(
     throw toError(squashAtomCommandFailure(paired), "Could not pair with the boat VM.");
   }
   const environmentId = paired.value;
+  // Pairing again keeps a saved VM switched off, as it was while stopped.
+  await runAtomCommand(
+    appAtomRegistry,
+    environmentCatalog.setEnabled,
+    { environmentId, enabled: true },
+    { reportFailure: false },
+  );
   if (!(await waitForConnected(environmentId))) throw new Error(`${vm.label} did not connect.`);
   return { vm, environmentId };
 }

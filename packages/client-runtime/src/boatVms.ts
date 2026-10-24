@@ -243,6 +243,54 @@ export function boatVmLabelUpdates(
   });
 }
 
+export interface BoatVmConnectionUpdate {
+  readonly type: "enable" | "disable" | "remove";
+  readonly environmentId: EnvironmentId;
+}
+
+/**
+ * What the saved environments of `hostEnvironmentId`'s boat VMs need once its
+ * VM list has loaded, so a VM's connection follows the VM: off while it is
+ * stopped instead of retrying, on again once it runs, and removed once boat
+ * deleted it. `seen` is the caller's record of the status each was last
+ * reconciled at, so a switch the user flips holds until the VM's status
+ * changes.
+ */
+export function boatVmConnectionUpdates(
+  entries: Iterable<ConnectionCatalogEntry>,
+  vms: ReadonlyArray<BoatVm>,
+  hostEnvironmentId: EnvironmentId,
+  seen: Map<EnvironmentId, BoatVm["status"]>,
+): ReadonlyArray<BoatVmConnectionUpdate> {
+  return [...entries].flatMap((entry): ReadonlyArray<BoatVmConnectionUpdate> => {
+    const { environmentId, recorded, hostname } = boatVmPairingOf(entry);
+    if (
+      recorded === null
+        ? !isBoatVmTailnetHostname(hostname ?? "")
+        : recorded.hostEnvironmentId !== hostEnvironmentId
+    ) {
+      return [];
+    }
+    const status = pairedBoatVm(vms, recorded?.sandboxId ?? null, hostname)?.status ?? "destroyed";
+    if (seen.get(environmentId) === status) return [];
+    seen.set(environmentId, status);
+    switch (status) {
+      case "destroyed":
+        // A pairing older than the record names its VM only by tailnet name,
+        // which may be another boat account's VM, so it is only switched off.
+        if (recorded !== null) return [{ type: "remove", environmentId }];
+        return entry.enabled ? [{ type: "disable", environmentId }] : [];
+      case "stopping":
+      case "stopped":
+        return entry.enabled ? [{ type: "disable", environmentId }] : [];
+      case "running":
+        return entry.enabled ? [] : [{ type: "enable", environmentId }];
+      default:
+        return [];
+    }
+  });
+}
+
 /**
  * "Run on" with the boat VMs folded in, for a client to turn into its own
  * entries. A paired machine that is one of the VMs shows as that VM while it

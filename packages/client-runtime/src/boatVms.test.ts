@@ -8,6 +8,7 @@ import * as Option from "effect/Option";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  boatVmConnectionUpdates,
   boatVmCopyRoute,
   boatVmCopyTarget,
   boatVmDraftLaunch,
@@ -262,6 +263,81 @@ describe("boatVmLabelUpdates", () => {
         [entry("box-node-0123", "https://t3-vm-bxrun.example.ts.net")],
         [{ ...vms[0]!, status: "destroyed" }],
       ),
+    ).toEqual([]);
+  });
+});
+
+describe("boatVmConnectionUpdates", () => {
+  const entry = (
+    httpBaseUrl: string,
+    enabled: boolean,
+    boatVm?: { readonly sandboxId: string; readonly hostEnvironmentId: EnvironmentId },
+  ) => ({
+    target: new BearerConnectionTarget({
+      environmentId: vmEnvironment,
+      label: "vm",
+      connectionId: "c1",
+    }),
+    profile: Option.some(
+      new BearerConnectionProfile({
+        connectionId: "c1",
+        environmentId: vmEnvironment,
+        label: "vm",
+        httpBaseUrl,
+        wsBaseUrl: httpBaseUrl.replace("https", "wss"),
+        ...(boatVm === undefined ? {} : { boatVm }),
+      }),
+    ),
+    enabled,
+  });
+  const recorded = (enabled: boolean) =>
+    entry("https://box-node-0123.example.ts.net", enabled, {
+      sandboxId: "bx_run",
+      hostEnvironmentId: host,
+    });
+  const vm = (status: "running" | "stopped" | "destroyed") => [
+    { sandboxId: "bx_run", label: "acme/app", status },
+  ];
+
+  it("switches a VM's connection off while it is stopped and on once it runs", () => {
+    const seen = new Map();
+    expect(boatVmConnectionUpdates([recorded(true)], vm("stopped"), host, seen)).toEqual([
+      { type: "disable", environmentId: vmEnvironment },
+    ]);
+    expect(boatVmConnectionUpdates([recorded(false)], vm("running"), host, seen)).toEqual([
+      { type: "enable", environmentId: vmEnvironment },
+    ]);
+  });
+
+  it("keeps the user's switch until the VM's status changes", () => {
+    const seen = new Map();
+    expect(boatVmConnectionUpdates([recorded(true)], vm("running"), host, seen)).toEqual([]);
+    expect(boatVmConnectionUpdates([recorded(false)], vm("running"), host, seen)).toEqual([]);
+  });
+
+  it("removes a recorded VM boat deleted, and only switches off one named by tailnet name", () => {
+    expect(boatVmConnectionUpdates([recorded(true)], [], host, new Map())).toEqual([
+      { type: "remove", environmentId: vmEnvironment },
+    ]);
+    expect(boatVmConnectionUpdates([recorded(true)], vm("destroyed"), host, new Map())).toEqual([
+      { type: "remove", environmentId: vmEnvironment },
+    ]);
+    expect(
+      boatVmConnectionUpdates(
+        [entry("https://t3-vm-bxgone.example.ts.net", true)],
+        [],
+        host,
+        new Map(),
+      ),
+    ).toEqual([{ type: "disable", environmentId: vmEnvironment }]);
+  });
+
+  it("leaves other machines and another host's VMs alone", () => {
+    expect(
+      boatVmConnectionUpdates([entry("https://laptop.example.ts.net", true)], [], host, new Map()),
+    ).toEqual([]);
+    expect(
+      boatVmConnectionUpdates([recorded(true)], [], EnvironmentId.make("other"), new Map()),
     ).toEqual([]);
   });
 });

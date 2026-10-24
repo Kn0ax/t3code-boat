@@ -34,7 +34,6 @@ import {
   launchBoatVm,
   readBoatVmLaunch,
   updateBoatVmLaunch,
-  useBoatVmEnvironmentLabels,
   useBoatVmLaunch,
   useBoatVmPairings,
 } from "../../state/boatVms";
@@ -195,7 +194,6 @@ export function useBoatVmCopy(input: {
     hostId === null ? null : boatVmEnvironment.list({ environmentId: hostId, input: {} }),
   );
   const loadedVms = vms.data?.available === true ? vms.data.vms : undefined;
-  useBoatVmEnvironmentLabels(loadedVms);
   const route =
     thread === null
       ? null
