@@ -1,8 +1,4 @@
-import {
-  BOAT_LOGO_PATH,
-  BOAT_LOGO_TRANSFORM,
-  BOAT_LOGO_VIEW_BOX,
-} from "@t3tools/client-runtime/boat-vms";
+import { BOAT_LOGO_PATH, BOAT_LOGO_VIEW_BOX } from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
 import type { FunctionComponent, SVGProps } from "react";
@@ -54,7 +50,7 @@ function BoatVmIcon(props: SVGProps<SVGSVGElement>) {
       fill="currentColor"
       {...props}
     >
-      <path transform={BOAT_LOGO_TRANSFORM} d={BOAT_LOGO_PATH} />
+      <path d={BOAT_LOGO_PATH} />
     </svg>
   );
 }

@@ -256,6 +256,10 @@ export class ThreadImportService extends Context.Service<
      * someone deleted it, null when there is none.
      */
     readonly copyState: (originKey: string) => Effect.Effect<CopyState | "deleted" | null>;
+    /** The title of the copy of `originKey` and when it last changed; null when there is none or it is deleted or archived. */
+    readonly copyTitle: (
+      originKey: string,
+    ) => Effect.Effect<{ readonly title: string; readonly updatedAtMs: number } | null>;
     /**
      * Settles the copy of `originKey`. `episode` keeps the command id apart
      * from an earlier settle of the same copy.
@@ -379,6 +383,18 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const copyTitle: ThreadImportService["Service"]["copyTitle"] = Effect.fn(
+    "ThreadImportService.copyTitle",
+  )(function* (originKey) {
+    const existing = yield* Effect.option(
+      orchestrator.getThreadRecords(importedThreadId(originKey), []),
+    );
+    if (Option.isNone(existing)) return null;
+    const { thread } = existing.value;
+    if (thread.deletedAt !== null || thread.archivedAt !== null) return null;
+    return { title: thread.title, updatedAtMs: DateTime.toEpochMillis(thread.updatedAt) };
+  });
+
   const settleCopy: ThreadImportService["Service"]["settleCopy"] = Effect.fn(
     "ThreadImportService.settleCopy",
   )(function* (originKey, episode) {
@@ -412,6 +428,7 @@ const make = Effect.gen(function* () {
     mirrorThread,
     deleteCopy,
     copyState,
+    copyTitle,
     settleCopy,
     copySnapshot,
   });

@@ -250,6 +250,8 @@ const makeHarness = (input: {
   /** The copies' states here; none are settled when omitted. */
   readonly copyState?: ThreadImportService.ThreadImportService["Service"]["copyState"];
   readonly copySnapshot?: ThreadImportService.ThreadImportService["Service"]["copySnapshot"];
+  /** The copies' titles here; none when omitted. */
+  readonly copyTitle?: ThreadImportService.ThreadImportService["Service"]["copyTitle"];
   /** A T3 home that outlives one server, for state kept across restarts. */
   readonly baseDir?: string;
   /** This server's tailnet origin for VMs to link back to; none when omitted. */
@@ -337,6 +339,7 @@ const makeHarness = (input: {
                   Effect.tap(() => Effect.sync(() => record.events.push(`delete:${originKey}`))),
                 ),
         copyState: (originKey) => input.copyState?.(originKey) ?? Effect.succeed(null),
+        copyTitle: (originKey) => input.copyTitle?.(originKey) ?? Effect.succeed(null),
         settleCopy: (originKey) =>
           Effect.sync(() => void record.events.push(`settle:${originKey}`)),
         copySnapshot: (originKey) => input.copySnapshot?.(originKey) ?? Effect.succeed(null),
@@ -956,6 +959,24 @@ describe("BoatVmService", () => {
       }
     }),
   );
+
+  it.effect("sizes a new VM by the launch's size over the boat VM size", () => {
+    const { record, layer } = makeHarness({
+      snapshots: ["t3-base"],
+      settings: { boatVmSize: "medium" },
+    });
+    return Effect.gen(function* () {
+      yield* (yield* BoatVmService.BoatVmService).launch({
+        repository: repository(),
+        size: "large",
+      });
+
+      assert.deepEqual(
+        record.targets.map((target) => target.size),
+        ["large", "large"],
+      );
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("sizes VMs by the boat VM size, not the jobs' default size", () => {
     const { record, layer } = makeHarness({
@@ -1892,6 +1913,35 @@ describe("boat VM lifecycle", () => {
       assert.deepEqual(record.events.slice(2), [mirrored("vm1", "t1")]);
       assert.deepEqual(record.stopped, []);
       assert.deepEqual(record.destroyed, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lists a VM by the title of its latest thread copied here", () => {
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1"), vmThread("t2"), vmThread("t3")], archived: [] }],
+    ]);
+    const long = `Fix the login redirect ${"and more ".repeat(10)}`;
+    const titles = new Map([
+      ["boat-vm:vm1:t1", { title: "Older thread", updatedAtMs: 1 }],
+      ["boat-vm:vm1:t2", { title: `  ${long}`, updatedAtMs: 3 }],
+    ]);
+    const { layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1", "t3:no-project"), running("named", "t3:no-project:Explore")],
+      // t3's copy is archived or deleted here, so it has no title.
+      copyTitle: (originKey) => Effect.succeed(titles.get(originKey) ?? null),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      const listed = yield* (yield* BoatVmService.BoatVmService).list;
+      assert.deepEqual(
+        listed.vms.map(({ sandboxId, task }) => ({ sandboxId, task })),
+        [
+          { sandboxId: "vm1", task: `${long.slice(0, 59).trimEnd()}…` },
+          { sandboxId: "named", task: "Explore" },
+        ],
+      );
     }).pipe(Effect.provide(layer));
   });
 

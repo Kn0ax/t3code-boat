@@ -11,6 +11,7 @@ import type {
   ProviderInteractionMode,
   ProviderOptionSelection,
   RuntimeMode,
+  SandboxJobSize,
   ServerProvider,
 } from "@t3tools/contracts";
 import {
@@ -243,8 +244,14 @@ type NewTaskFlowContextValue = {
    */
   readonly openDraft: (draftKey: string) => boolean;
   readonly selectEnvironment: (environmentId: EnvironmentId) => void;
-  readonly switchEnvironment: (environmentId: EnvironmentId) => Promise<boolean>;
+  /** `size` is a new boat VM's; omitted uses the host's boat VM size. */
+  readonly switchEnvironment: (
+    environmentId: EnvironmentId,
+    size?: SandboxJobSize,
+  ) => Promise<boolean>;
   readonly switchingToEnvironmentId: EnvironmentId | null;
+  /** The host's boat VM size, which "New boat VM" offers first; null while unknown. */
+  readonly boatVmDefaultSize: SandboxJobSize | null;
   /** Lists the boat VMs again; a VM may have stopped since the list loaded. */
   readonly refreshBoatVms: () => void;
   readonly setSelectedModelKey: (
@@ -875,7 +882,7 @@ export function NewTaskFlowProvider(
    * launch shows in the draft's composer. A draft that moved or was sent in
    * the meantime stays where it is.
    */
-  const startBoatVm = (sandboxId: string | null): boolean => {
+  const startBoatVm = (sandboxId: string | null, size: SandboxJobSize | undefined): boolean => {
     const draftKey = selectedProjectDraftKey;
     if (boatVmHostId === null || boatVmDraft === null || draftKey === null) return false;
     const stamp = appAtomRegistry.get(composerDraftsAtom)[draftKey]?.project;
@@ -884,6 +891,7 @@ export function NewTaskFlowProvider(
     void launchBoatVm({
       hostEnvironmentId: boatVmHostId,
       sandboxId,
+      ...(size === undefined ? {} : { size }),
       repository: boatVmDraft === "scratch" ? null : boatVmDraft,
       bannerKey: draftKey,
     }).then((launched) => {
@@ -904,10 +912,13 @@ export function NewTaskFlowProvider(
     });
     return true;
   };
-  const switchEnvironment = async (environmentId: EnvironmentId): Promise<boolean> => {
+  const switchEnvironment = async (
+    environmentId: EnvironmentId,
+    size?: SandboxJobSize,
+  ): Promise<boolean> => {
     const target = environments.find((environment) => environment.environmentId === environmentId);
     if (target?.boatVm !== undefined) {
-      return target.disabledReason === undefined && startBoatVm(target.boatVm.sandboxId);
+      return target.disabledReason === undefined && startBoatVm(target.boatVm.sandboxId, size);
     }
     if (environmentId === selectedEnvironmentId) {
       latestSwitchRef.current = null;
@@ -1355,6 +1366,9 @@ export function NewTaskFlowProvider(
     selectEnvironment,
     switchEnvironment,
     switchingToEnvironmentId,
+    boatVmDefaultSize:
+      (boatVmHostId === null ? undefined : serverConfigs.get(boatVmHostId))?.settings.sandboxJobs
+        .boatVmSize ?? null,
     refreshBoatVms: boatVms.refresh,
     setSelectedModelKey,
     setWorkspaceMode,

@@ -3,6 +3,7 @@ import type {
   EnvironmentMachineKind,
   VcsRef,
   ProjectId,
+  SandboxJobSize,
   WorktreeSubmodules,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -21,10 +22,10 @@ export interface EnvironmentOption {
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
   /**
-   * Set on a boat VM entry: picking it starts that VM (null: a new one), so
-   * `environmentId` is only the entry's key until the VM is paired.
+   * Set on a boat VM entry: picking it starts that VM (null: a new one, of
+   * `size` when set), so `environmentId` is only the entry's key until the VM is paired.
    */
-  boatVm?: { readonly sandboxId: string | null };
+  boatVm?: { readonly sandboxId: string | null; readonly size?: SandboxJobSize };
   /** Why the entry cannot be picked; shown under it instead of hiding it. */
   disabledReason?: string;
   /** Set on a boat VM, started or paired: what it is, shown under it with the boat mark. */

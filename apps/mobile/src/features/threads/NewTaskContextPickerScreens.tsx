@@ -4,7 +4,7 @@ import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { NavigationRow } from "../../components/ui/NavigationRow";
-import type { BoatVmRunOnRow } from "@t3tools/client-runtime/boat-vms";
+import { boatVmSizeRows, type BoatVmRunOnRow } from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { shouldCheckoutNewTaskBranch } from "./new-task-context-presentation";
 import type { VcsRef } from "@t3tools/client-runtime/state/vcs";
@@ -358,6 +358,12 @@ export function NewTaskEnvironmentPickerRouteScreen() {
   // VMs on its own, so the list can say a stopped VM still runs.
   const { refreshBoatVms } = flow;
   useEffect(() => refreshBoatVms(), [refreshBoatVms]);
+  // "New boat VM", once picked, asks for the size before it launches.
+  const [sizingEnvironmentId, setSizingEnvironmentId] = useState<EnvironmentId | null>(null);
+  const sizeRows =
+    sizingEnvironmentId === null || flow.boatVmDefaultSize === null
+      ? null
+      : boatVmSizeRows(flow.boatVmDefaultSize);
   return (
     <View className="flex-1 bg-sheet" collapsable={false}>
       <NativeStackScreenOptions
@@ -370,7 +376,7 @@ export function NewTaskEnvironmentPickerRouteScreen() {
         <AndroidScreenHeader
           title="Environment"
           hideBottomBorder
-          onBack={() => navigation.goBack()}
+          onBack={() => (sizeRows === null ? navigation.goBack() : setSizingEnvironmentId(null))}
         />
       ) : null}
       <ScreenContent>
@@ -384,39 +390,63 @@ export function NewTaskEnvironmentPickerRouteScreen() {
           showsVerticalScrollIndicator={false}
         >
           <PickerSurface>
-            {flow.environments.map((environment, index) =>
-              environment.boatVm !== undefined && environment.boatVmRow !== undefined ? (
+            {sizingEnvironmentId !== null &&
+              sizeRows?.map((row, index) => (
                 <BoatVmPickerRow
-                  key={String(environment.environmentId)}
-                  row={environment.boatVmRow}
-                  disabledReason={environment.disabledReason}
+                  key={row.size}
+                  row={{ title: `New boat VM · ${row.label}`, note: row.note }}
+                  disabledReason={undefined}
                   disabled={flow.switchingToEnvironmentId !== null}
-                  isLast={index === flow.environments.length - 1}
+                  isLast={index === sizeRows.length - 1}
                   onPress={() => {
                     void Haptics.selectionAsync();
-                    void flow.switchEnvironment(environment.environmentId).then((started) => {
+                    void flow.switchEnvironment(sizingEnvironmentId, row.size).then((started) => {
                       if (started) navigation.goBack();
                     });
                   }}
                 />
-              ) : (
-                <EnvironmentPickerRow
-                  key={String(environment.environmentId)}
-                  environmentId={environment.environmentId}
-                  isLast={index === flow.environments.length - 1}
-                  disabled={flow.switchingToEnvironmentId !== null}
-                  onPress={() => {
-                    void Haptics.selectionAsync();
-                    void flow.switchEnvironment(environment.environmentId).then((switched) => {
-                      if (switched) navigation.goBack();
-                    });
-                  }}
-                  selected={flow.selectedEnvironmentId === environment.environmentId}
-                  title={environment.environmentLabel}
-                  boatVmRow={environment.boatVmRow}
-                />
-              ),
-            )}
+              ))}
+            {sizeRows === null &&
+              flow.environments.map((environment, index) =>
+                environment.boatVm !== undefined && environment.boatVmRow !== undefined ? (
+                  <BoatVmPickerRow
+                    key={String(environment.environmentId)}
+                    row={environment.boatVmRow}
+                    disabledReason={environment.disabledReason}
+                    disabled={flow.switchingToEnvironmentId !== null}
+                    isLast={index === flow.environments.length - 1}
+                    onPress={() => {
+                      void Haptics.selectionAsync();
+                      if (
+                        environment.boatVm?.sandboxId === null &&
+                        flow.boatVmDefaultSize !== null
+                      ) {
+                        setSizingEnvironmentId(environment.environmentId);
+                        return;
+                      }
+                      void flow.switchEnvironment(environment.environmentId).then((started) => {
+                        if (started) navigation.goBack();
+                      });
+                    }}
+                  />
+                ) : (
+                  <EnvironmentPickerRow
+                    key={String(environment.environmentId)}
+                    environmentId={environment.environmentId}
+                    isLast={index === flow.environments.length - 1}
+                    disabled={flow.switchingToEnvironmentId !== null}
+                    onPress={() => {
+                      void Haptics.selectionAsync();
+                      void flow.switchEnvironment(environment.environmentId).then((switched) => {
+                        if (switched) navigation.goBack();
+                      });
+                    }}
+                    selected={flow.selectedEnvironmentId === environment.environmentId}
+                    title={environment.environmentLabel}
+                    boatVmRow={environment.boatVmRow}
+                  />
+                ),
+              )}
           </PickerSurface>
         </ScrollView>
       </ScreenContent>

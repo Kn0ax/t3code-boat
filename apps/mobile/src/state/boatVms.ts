@@ -27,6 +27,7 @@ import {
   type BoatVmLaunchInput,
   type BoatVmRepository,
   type EnvironmentId,
+  type SandboxJobSize,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
@@ -191,6 +192,8 @@ type LaunchInput = {
   readonly sandboxId: string | null;
   readonly repository: BoatVmRepository | null;
   readonly bannerKey: string;
+  /** A new VM's size; omitted uses the host's boat VM size. */
+  readonly size?: SandboxJobSize;
 };
 
 /** Starts a boat VM through the host and pairs with it once it is connected. Throws with the reason. */
@@ -209,6 +212,7 @@ async function launchAndPair(
         transport: "http",
         ...(input.sandboxId === null ? {} : { sandboxId: input.sandboxId }),
         ...(input.repository === null ? {} : { repository: input.repository }),
+        ...(input.size === undefined ? {} : { size: input.size }),
         launchId,
         ...extra,
       },

@@ -75,6 +75,21 @@ describe("boatVmRunOnOptions", () => {
     ]);
   });
 
+  it("offers New boat VM in every size once the host's default size is known", () => {
+    const sized = boatVmRunOnOptions([], [], () => null, { scratch: false, defaultSize: "small" });
+    expect(sized.map((option) => [option.environmentId, option.label, option.boatVm])).toEqual([
+      ["boat-vm:new:small", "New boat VM · Small", { sandboxId: null, size: "small" }],
+      ["boat-vm:new:medium", "New boat VM · Medium", { sandboxId: null, size: "medium" }],
+      ["boat-vm:new:large", "New boat VM · Large", { sandboxId: null, size: "large" }],
+    ]);
+    const disabled = boatVmRunOnOptions([], [], () => null, {
+      scratch: false,
+      defaultSize: "small",
+      disabledReason: "No key",
+    });
+    expect(disabled.map((option) => option.environmentId)).toEqual(["boat-vm:new"]);
+  });
+
   it("drops machines paired by tailnet name once boat no longer has their sandbox", () => {
     const hostnames: Record<string, string> = {
       gone: "snapshot-bx-gone",

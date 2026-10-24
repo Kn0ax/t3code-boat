@@ -9,6 +9,7 @@ import {
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import { SandboxJobSize } from "./sandboxJobSettings.ts";
 
 /**
  * boat VMs a client can run a thread on. The environment that holds the boat
@@ -119,7 +120,7 @@ export const BoatVm = Schema.Struct({
   sandboxId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   status: BoatVmStatus,
-  /** The thread the VM was launched for, when its name records one. */
+  /** The title of the VM's latest thread here, else the thread its name records. */
   task: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type BoatVm = typeof BoatVm.Type;
@@ -147,6 +148,8 @@ export const BoatVmLaunchInput = Schema.Struct({
   sandboxId: Schema.optionalKey(TrimmedNonEmptyString),
   /** Omitted for a "No project" thread: the VM gets an empty scratch folder instead of a checkout. */
   repository: Schema.optionalKey(BoatVmRepository),
+  /** A new VM's size; omitted uses the boat VM size setting. A resumed VM keeps its own. */
+  size: Schema.optionalKey(SandboxJobSize),
   /** Names the launch on the progress stream, so a client can match it before the call returns. */
   launchId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
   /**

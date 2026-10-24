@@ -104,6 +104,8 @@ const SCRIPT_TIMEOUT_MS = 5 * 60_000;
 /** Linking includes the VM signing in to this server over the tailnet. */
 const MANAGER_LINK_TIMEOUT_MS = 60_000;
 const SYNC_ENV_PATH = "~/.t3/boat-sync-env";
+/** Longest thread title a VM list entry carries; picker rows show one line. */
+const MAX_TASK_LENGTH = 60;
 
 /** scp-style remotes (`git@host:owner/repo`) have no SSH key on the VM; HTTPS takes GH_TOKEN. */
 export const boatVmCloneUrl = (remoteUrl: string): string => {
@@ -1017,6 +1019,27 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     sandboxes.filter((sandbox) => parseBoatVmSandboxLabel(sandbox.label) !== null);
   const listVms = (provider: SandboxProviderShape) => provider.list().pipe(Effect.map(onlyVms));
 
+  /**
+   * The title of the VM's most recently changed thread, read from the copies
+   * here so a stopped VM has one too; undefined before any thread is mirrored.
+   */
+  const latestThreadTitle = Effect.fn("BoatVmService.latestThreadTitle")(function* (
+    sandboxId: string,
+  ) {
+    let latest: { readonly title: string; readonly updatedAtMs: number } | undefined;
+    for (const threadId of lifecycle.mirroredThreadIds(sandboxId)) {
+      const copy = yield* threadImport.copyTitle(boatVmThreadOriginKey(sandboxId, threadId));
+      if (copy !== null && (latest === undefined || copy.updatedAtMs > latest.updatedAtMs)) {
+        latest = copy;
+      }
+    }
+    const title = latest?.title.replace(/\s+/gu, " ").trim();
+    if (!title) return undefined;
+    return title.length > MAX_TASK_LENGTH
+      ? `${title.slice(0, MAX_TASK_LENGTH - 1).trimEnd()}…`
+      : title;
+  });
+
   const list: BoatVmService["Service"]["list"] = Effect.scoped(
     Effect.gen(function* () {
       const provider = yield* resolveProvider(yield* getSettings);
@@ -1031,15 +1054,18 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         sandboxIds: sandboxes
           .filter((sandbox) => sandbox.status !== "destroyed")
           .map((sandbox) => sandbox.ref.sandboxId),
-        vms: vms.map((vm) => {
-          const named = parseBoatVmSandboxLabel(vm.label);
-          return {
-            sandboxId: vm.ref.sandboxId,
-            label: named?.label || vm.ref.sandboxId,
-            status: vm.status,
-            ...(named?.task === undefined ? {} : { task: named.task }),
-          };
-        }),
+        vms: yield* Effect.forEach(vms, (vm) =>
+          Effect.gen(function* () {
+            const named = parseBoatVmSandboxLabel(vm.label);
+            const task = (yield* latestThreadTitle(vm.ref.sandboxId)) ?? named?.task;
+            return {
+              sandboxId: vm.ref.sandboxId,
+              label: named?.label || vm.ref.sandboxId,
+              status: vm.status,
+              ...(task === undefined ? {} : { task }),
+            };
+          }),
+        ),
       };
     }),
   ).pipe(
@@ -1078,7 +1104,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           provider,
           target: {
             label,
-            size: settings.boatVmSize,
+            size: input.size ?? settings.boatVmSize,
             idleTimeoutMinutes: settings.boatVmIdleMinutes,
             t3Version,
             installAgentClis: true,
@@ -1587,6 +1613,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           : {
               ...(requested.transport === undefined ? {} : { transport: requested.transport }),
               ...(requested.launchId === undefined ? {} : { launchId: requested.launchId }),
+              ...(requested.size === undefined ? {} : { size: requested.size }),
               ...(continuing.repository === undefined ? {} : { repository: continuing.repository }),
               task: continuing.continuation.snapshot.projection.thread.title,
             };

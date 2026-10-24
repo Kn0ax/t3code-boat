@@ -1,8 +1,4 @@
-import {
-  BOAT_LOGO_PATH,
-  BOAT_LOGO_TRANSFORM,
-  BOAT_LOGO_VIEW_BOX,
-} from "@t3tools/client-runtime/boat-vms";
+import { BOAT_LOGO_PATH, BOAT_LOGO_VIEW_BOX } from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import Svg, { Path } from "react-native-svg";
 import { withUniwind } from "uniwind";
@@ -59,7 +55,7 @@ export function BoatVmSymbol(props: {
       viewBox={BOAT_LOGO_VIEW_BOX}
       colorClassName={props.tintColorClassName}
     >
-      <Path transform={BOAT_LOGO_TRANSFORM} d={BOAT_LOGO_PATH} fill="currentColor" />
+      <Path d={BOAT_LOGO_PATH} fill="currentColor" />
     </ThemedSvg>
   );
 }

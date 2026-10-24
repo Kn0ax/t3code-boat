@@ -20,6 +20,7 @@ import {
   boatVmEnvironmentLabel,
   boatVmRunOnChoices,
   boatVmRunOnRow,
+  boatVmSizeRows,
   resolveBoatVmHostEnvironmentId,
   updateBoatVmLaunchEntries,
   withoutShadowedBoatVmCopies,
@@ -315,6 +316,14 @@ describe("boatVmRunOnRow", () => {
       note: "Creates a cloud VM for this repo",
     });
     expect(boatVmRunOnRow(null, { scratch: true }).note).toBe("Creates a cloud VM with no project");
+  });
+
+  it("lists every size for New boat VM, marking the host's default", () => {
+    expect(boatVmSizeRows("medium")).toEqual([
+      { size: "small", label: "Small", note: "2 vCPU · 4 GB" },
+      { size: "medium", label: "Medium", note: "4 vCPU · 8 GB · default" },
+      { size: "large", label: "Large", note: "8 vCPU · 16 GB" },
+    ]);
   });
 
   it("names a paired No project VM the same way wherever it shows", () => {

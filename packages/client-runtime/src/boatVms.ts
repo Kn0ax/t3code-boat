@@ -5,6 +5,7 @@ import {
   boatVmThreadCopyOrigin,
   boatVmThreadOriginKey,
   isBoatVmTailnetHostname,
+  SandboxJobSize,
   ThreadId,
   type BoatVm,
   type BoatVmLaunchResult,
@@ -59,11 +60,10 @@ const boatVmTitle = (vmLabel: string): string =>
   vmLabel === BOAT_VM_SCRATCH_LABEL ? "No project" : vmLabel;
 
 /** How a paired boat VM is named wherever its environment shows. */
-/** boat's mark, drawn in a 260 x 260 box through BOAT_LOGO_TRANSFORM, for marking boat VMs. */
-export const BOAT_LOGO_VIEW_BOX = "0 0 260 260";
-export const BOAT_LOGO_TRANSFORM = "translate(0 260) scale(0.1 -0.1)";
+/** boat's sailboat logo, for marking boat VMs. */
+export const BOAT_LOGO_VIEW_BOX = "0 0 497.985 462.094";
 export const BOAT_LOGO_PATH =
-  "M690 2364 c-52 -31 -142 -84 -200 -117 -58 -33 -113 -67 -122 -75 -16 -14 -18 -40 -18 -278 l0 -264 53 -34 c128 -82 389 -226 410 -226 13 0 64 23 113 52 160 93 172 98 241 98 71 0 110 -15 161 -64 137 -128 85 -350 -93 -401 -85 -25 -124 -15 -273 70 -72 41 -139 75 -149 75 -10 0 -67 -29 -128 -64 -60 -35 -155 -89 -210 -121 -55 -31 -106 -64 -112 -73 -10 -12 -13 -82 -13 -272 0 -253 0 -257 23 -277 26 -23 428 -253 443 -253 5 0 45 21 89 46 293 170 357 209 365 225 6 10 10 80 10 156 0 76 5 155 11 177 13 48 82 123 134 147 52 24 138 24 191 0 23 -11 85 -44 137 -75 52 -31 107 -56 121 -56 14 0 70 25 124 57 53 31 144 83 202 116 58 33 113 67 123 75 15 14 17 40 17 273 0 255 0 259 -22 279 -13 12 -39 30 -58 40 -19 10 -109 61 -199 114 -90 53 -173 96 -185 96 -12 0 -77 -32 -146 -72 -117 -67 -130 -72 -196 -76 -61 -3 -77 -1 -122 22 -55 28 -97 75 -118 133 -9 25 -13 89 -14 189 0 172 8 156 -105 221 -38 22 -130 74 -202 116 -81 47 -143 77 -160 77 -16 -1 -71 -26 -123 -56z";
+  "M490.123 361.461C494.464 361.461 497.985 364.978 497.985 369.323V403.916C497.985 408.256 494.464 411.777 490.123 411.777H473.317C468.941 411.777 465.396 415.327 465.396 419.699V454.232C465.396 458.573 461.875 462.094 457.534 462.094H84.3579C83.1446 462.094 81.9773 461.511 81.2263 460.558C52.4607 424.054 51.9691 423.595 7.86426 411.777C3.67043 410.653 0 408.256 0 403.916V369.323C0 364.978 3.52235 361.461 7.86426 361.461H490.123ZM234.167 4.81756C238.589 -2.56834 249.679 -1.18229 252.148 7.06463L321.938 240.22L244.366 338.334H51.9617C44.2696 338.334 39.5154 329.947 43.4665 323.347L234.167 4.81756ZM453.056 132.260C451.192 124.166 440.791 121.826 435.640 128.341L282.295 322.292C277.163 328.784 281.786 338.334 290.063 338.334H488.080C494.445 338.334 499.157 332.414 497.728 326.210L453.056 132.260Z";
 
 export const boatVmEnvironmentLabel = (vmLabel: string): string => `boat: ${boatVmTitle(vmLabel)}`;
 
@@ -332,6 +332,30 @@ export function boatVmRunOnRow(
     note: vm.task === undefined ? note : `${note} · ${vm.task}`,
   };
 }
+
+/** What each size starts on boat (sandbox-boat's BOAT_SIZE_TYPES: small, default, large). */
+const BOAT_VM_SIZE_LABELS: Record<
+  SandboxJobSize,
+  { readonly label: string; readonly specs: string }
+> = {
+  small: { label: "Small", specs: "2 vCPU · 4 GB" },
+  medium: { label: "Medium", specs: "4 vCPU · 8 GB" },
+  large: { label: "Large", specs: "8 vCPU · 16 GB" },
+};
+
+/** A size a new boat VM can be started with, as a picker lists it. */
+export interface BoatVmSizeRow {
+  readonly size: SandboxJobSize;
+  readonly label: string;
+  readonly note: string;
+}
+
+/** The sizes for "New boat VM", smallest first, with `defaultSize` (the host's boat VM size) marked. */
+export const boatVmSizeRows = (defaultSize: SandboxJobSize): ReadonlyArray<BoatVmSizeRow> =>
+  SandboxJobSize.literals.map((size) => {
+    const { label, specs } = BOAT_VM_SIZE_LABELS[size];
+    return { size, label, note: size === defaultSize ? `${specs} · default` : specs };
+  });
 
 interface HostCandidate {
   readonly environmentId: EnvironmentId;

@@ -228,6 +228,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
       void launchBoatVm({
         hostEnvironmentId: boatVmHostId,
         sandboxId: target.boatVm.sandboxId,
+        ...(target.boatVm.size === undefined ? {} : { size: target.boatVm.size }),
         repository: boatVmDraft === "scratch" ? null : boatVmDraft,
         bannerKey: boatVmLaunchKey,
       })

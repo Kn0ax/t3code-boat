@@ -7,6 +7,7 @@ import {
   boatVmPairingOf,
   boatVmRunOnChoices,
   boatVmRunOnRow,
+  boatVmSizeRows,
   type BoatVmPairing,
   type BoatVmRunOnRow,
 } from "@t3tools/client-runtime/boat-vms";
@@ -20,6 +21,7 @@ import {
   type BoatVmBringHomeResult,
   type BoatVmLaunchInput,
   type BoatVmRepository,
+  type SandboxJobSize,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
@@ -111,13 +113,18 @@ export function useRefreshBoatVmsOnOpen(
 
 /**
  * "Run on" with the boat VMs folded in, as boatVmRunOnChoices picks them, and
- * "New boat VM" for a draft in a repository or, `scratch`, without a project.
+ * "New boat VM" for a draft in a repository or, `scratch`, without a project:
+ * one entry per size once the host's boat VM size (`defaultSize`) is known.
  */
 export function boatVmRunOnOptions(
   environments: ReadonlyArray<EnvironmentOption>,
   vms: ReadonlyArray<BoatVm>,
   hostnameOf: (environmentId: EnvironmentId) => string | null,
-  newVm: { readonly disabledReason?: string | undefined; readonly scratch: boolean },
+  newVm: {
+    readonly disabledReason?: string | undefined;
+    readonly scratch: boolean;
+    readonly defaultSize?: SandboxJobSize | undefined;
+  },
   inventory?: Parameters<typeof boatVmRunOnChoices>[3],
 ): EnvironmentOption[] {
   const choices = boatVmRunOnChoices(environments, vms, hostnameOf, inventory);
@@ -128,7 +135,13 @@ export function boatVmRunOnOptions(
       return { ...machine, label: row.title, boatVmNote: row.note };
     }),
     ...choices.vms.map((vm) => entry(vm.sandboxId, boatVmRunOnRow(vm))),
-    newBoatVmEntry(newVm.disabledReason, newVm.scratch),
+    ...(newVm.disabledReason !== undefined || newVm.defaultSize === undefined
+      ? [newBoatVmEntry(newVm.disabledReason, newVm.scratch)]
+      : boatVmSizeRows(newVm.defaultSize).map(({ size, label, note }) => ({
+          ...entry(null, { title: `New boat VM · ${label}`, note }),
+          environmentId: EnvironmentId.make(`boat-vm:new:${size}`),
+          boatVm: { sandboxId: null, size },
+        }))),
   ];
 }
 
@@ -162,6 +175,8 @@ type LaunchInput = {
   readonly sandboxId: string | null;
   readonly repository: BoatVmRepository | null;
   readonly bannerKey: string;
+  /** A new VM's size; omitted uses the host's boat VM size. */
+  readonly size?: SandboxJobSize;
 };
 
 /**
@@ -182,6 +197,7 @@ function useLaunchAndPairBoatVm() {
         transport: boatVmInitialTransport(window.location.protocol, isElectron),
         ...(input.sandboxId === null ? {} : { sandboxId: input.sandboxId }),
         ...(input.repository === null ? {} : { repository: input.repository }),
+        ...(input.size === undefined ? {} : { size: input.size }),
         launchId,
         ...extra,
       },

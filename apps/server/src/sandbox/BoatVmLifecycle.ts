@@ -781,5 +781,10 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     persisted = contents;
   });
 
-  return { apply, applyStopped, save, markLaunched };
+  /** The VM threads with a copy here, followed or left alone. */
+  const mirroredThreadIds = (sandboxId: string): ReadonlyArray<string> => [
+    ...(mirrorsByVm.get(sandboxId)?.keys() ?? []),
+  ];
+
+  return { apply, applyStopped, save, markLaunched, mirroredThreadIds };
 });

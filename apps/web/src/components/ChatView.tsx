@@ -1205,7 +1205,15 @@ export default function ChatView(props: ChatViewProps) {
           logicalProjectEnvironments,
           boatVms.data.vms,
           boatVmHostnameOf,
-          { disabledReason: newBoatVmDisabledReason, scratch: boatVmDraft === "scratch" },
+          {
+            disabledReason: newBoatVmDisabledReason,
+            scratch: boatVmDraft === "scratch",
+            defaultSize:
+              boatVmManagingHostId === null
+                ? undefined
+                : environmentById.get(boatVmManagingHostId)?.serverConfig?.settings.sandboxJobs
+                    .boatVmSize,
+          },
           boatVms.data.sandboxIds === undefined
             ? undefined
             : {
