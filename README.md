@@ -1,3 +1,28 @@
+## Using this fork (T3 Code Boat)
+
+T3 Code with [boat](https://boat.dev) VMs: pick a VM in **Run on** and the thread runs there. Data lives in `~/.t3-boat`, so it runs next to upstream T3 Code.
+
+### Install
+
+Get a build from [releases](https://github.com/Kn0ax/t3code-boat/releases):
+
+- **Mac:** open the `arm64.dmg`, drag **T3 Code (Boat)** to Applications, then run:
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/T3 Code (Boat).app"
+  ```
+- **Linux:** unpack `t3-<version>-linux-<arch>.tar.gz` and run `./t3 serve` inside the folder.
+- **Android:** install the `.apk` (shows up as **T3 Code Preview**).
+
+### Use boat VMs
+
+1. On the machine that should own the VMs, save a boat API key in **Settings → Integrations → Sandbox jobs**.
+2. Optional: on other machines, link to it in **Sandbox jobs → Boat manager**.
+3. In a new thread, open **Run on** and pick **New boat VM** or an existing VM.
+
+More: [Cloud sandboxes](docs/user/cloud-sandboxes.md#boat-vms)
+
+---
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
