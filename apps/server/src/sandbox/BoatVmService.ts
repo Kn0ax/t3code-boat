@@ -313,24 +313,22 @@ const SYNC_WARNINGS: Readonly<Record<string, (name: string) => string>> = {
     `${name} on the VM could not fast-forward to the remote branch, so it was not updated.`,
 };
 
-// Exits 0 while the VM has work: T3's state changed in the last N minutes (a
-// turn, a message), a client is connected (tailscale serve reaches T3 on
-// loopback), or the server has a child process (an agent, a terminal, a dev
-// server; an idle agent session ends after the server's own idle timeout).
-// /proc/net/tcp gives the local port in hex (the second argument) and state
-// 01 for established. The server's pid is the one the serve step recorded,
-// and a parent pid is the second field after a /proc stat line's name.
-export const BUSY_SCRIPT = `if find "$HOME/.t3/userdata" -maxdepth 1 -mmin "-$1" 2>/dev/null | grep -q .; then exit 0; fi
-for TABLE in /proc/net/tcp /proc/net/tcp6; do
-  [ -r "$TABLE" ] && awk -v port=":$2" 'substr($2, length($2) - 4) == port && $4 == "01" { found = 1 } END { exit !found }' "$TABLE" && exit 0
-done
-SERVER="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/pid" 2>/dev/null || true)"
+// Exits 0 while the server runs something: an agent, a terminal, a dev
+// server. An idle agent session ends after the server's own idle timeout, so
+// a finished turn stops counting. The resource monitor runs for the server's
+// whole life, and a connected client or a database write is no work, so none
+// of them keeps a VM up. The server's pid is the one the serve step recorded,
+// and a /proc stat line gives the state and the parent pid after the name.
+export const BUSY_SCRIPT = `SERVER="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/pid" 2>/dev/null || true)"
 case "$SERVER" in ''|*[!0-9]*) exit 1 ;; esac
-sed -n 's/.*) [A-Za-z] \\([0-9]*\\) .*/\\1/p' /proc/[0-9]*/stat 2>/dev/null | grep -qx "$SERVER"`;
-
-/** A port as /proc/net/tcp writes it. */
-export const busyPortArg = (port: number): string =>
-  port.toString(16).toUpperCase().padStart(4, "0");
+for DIR in /proc/[0-9]*; do
+  STAT="$(sed -n 's/.*) \\([A-Za-z]\\) \\([0-9]*\\) .*/\\1 \\2/p' "$DIR/stat" 2>/dev/null)"
+  [ "\${STAT#* }" = "$SERVER" ] || continue
+  [ "\${STAT% *}" != Z ] || continue
+  case "$(readlink "$DIR/exe" 2>/dev/null)" in */t3-resource-monitor) continue ;; esac
+  exit 0
+done
+exit 1`;
 
 // Each checkout under ~/work and its origin, one `<directory>\t<url>` line apiece.
 const CHECKOUTS_SCRIPT = `for dir in "$HOME"/work/*/; do
@@ -1992,7 +1990,6 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
                 : provider
                     .exec(vm.ref, {
                       script: BUSY_SCRIPT,
-                      args: [String(KEEP_ALIVE_INTERVAL_MINUTES + 1), busyPortArg(T3_PORT)],
                       timeoutMs: 60_000,
                     })
                     .pipe(

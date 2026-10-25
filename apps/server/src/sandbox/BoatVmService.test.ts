@@ -106,8 +106,6 @@ interface Record {
   /** Thread mirrors, copy deletes, and VM stops and deletes, in the order they happened. */
   readonly events: Array<string>;
   readonly written: Array<{ readonly path: string; readonly content: string }>;
-  /** The hex port each VM's busy check looks at; the host's own T3 may hold 3773. */
-  readonly busyPorts: Map<string, string>;
   /** Codes minted and ended for VMs to link back here, as "grant:<id>" and "revoke:<id>". */
   readonly managerAccess: Array<string>;
   /** The link requests VMs were sent, by sandbox id. */
@@ -162,11 +160,7 @@ const makeProvider = (record: Record, vms: ReadonlyArray<SandboxInfo>): SandboxP
       if (input.script.includes("sudo ")) {
         throw new Error("A test script would run sudo on this machine.");
       }
-      const args =
-        input.script === BoatVmService.BUSY_SCRIPT
-          ? [input.args?.[0] ?? "", record.busyPorts.get(ref.sandboxId) ?? "0001"]
-          : (input.args ?? []);
-      const result = NodeChildProcess.spawnSync("sh", ["-s", ...args], {
+      const result = NodeChildProcess.spawnSync("sh", ["-s", ...(input.args ?? [])], {
         input: input.script,
         encoding: "utf8",
         env: { ...gitEnv, HOME: homeOf(ref.sandboxId) },
@@ -271,7 +265,6 @@ const makeHarness = (input: {
     stopped: [],
     events: [],
     written: [],
-    busyPorts: new Map(),
     managerAccess: [],
     managerLinks: [],
     resumed: [],
@@ -1234,50 +1227,71 @@ describe("BoatVmService", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("keeps only running VMs that had work alive", () => {
-    const vm = (sandboxId: string, status: SandboxInfo["status"], label = `vm ${sandboxId}`) => ({
-      ref: { providerId: "boat" as const, sandboxId },
-      status,
-      label,
-    });
-    const { record, layer } = makeHarness({
-      vms: [
-        vm("busy", "running"),
-        vm("quiet", "running"),
-        vm("archived", "stopped"),
-        vm("job-node", "running", "sandbox job 1"),
-        vm("deleted", "destroyed", "old sandbox"),
-      ],
-    });
-    for (const sandboxId of ["busy", "job-node"]) {
-      const userdata = NodePath.join(homeOf(sandboxId), ".t3", "userdata");
-      NodeFS.mkdirSync(userdata, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(userdata, "statev2.sqlite-wal"), "");
-    }
-    // Seconds since the epoch: a 2001 timestamp, long outside any idle window.
-    const old = 1_000_000_000;
-    const quiet = NodePath.join(homeOf("quiet"), ".t3", "userdata");
-    NodeFS.mkdirSync(quiet, { recursive: true });
-    NodeFS.writeFileSync(NodePath.join(quiet, "statev2.sqlite-wal"), "");
-    NodeFS.utimesSync(NodePath.join(quiet, "statev2.sqlite-wal"), old, old);
-    NodeFS.utimesSync(quiet, old, old);
-    return Effect.gen(function* () {
-      const vms = yield* BoatVmService.BoatVmService;
+  /**
+   * A stand-in for a VM's T3 server that runs `children` (shell lines) and
+   * records its pid where the busy check reads it. Ready once they have started.
+   */
+  const fakeServer = (sandboxId: string, children = "") =>
+    Effect.acquireRelease(
+      Effect.promise(
+        () =>
+          new Promise<NodeChildProcess.ChildProcess>((resolve) => {
+            const server = NodeChildProcess.spawn("sh", ["-c", `${children}\necho ready\nwait`], {
+              detached: true,
+              stdio: ["ignore", "pipe", "ignore"],
+            });
+            server.stdout!.once("data", () => resolve(server));
+          }),
+      ).pipe(
+        Effect.tap((server) =>
+          Effect.sync(() => {
+            const state = NodePath.join(homeOf(sandboxId), ".t3", "ssh-launch", "sandbox");
+            NodeFS.mkdirSync(state, { recursive: true });
+            NodeFS.writeFileSync(NodePath.join(state, "pid"), `${server.pid}\n`);
+          }),
+        ),
+      ),
+      (server) => Effect.sync(() => process.kill(-server.pid!, "SIGKILL")),
+    );
 
-      yield* vms.keepAlive;
-      const listed = yield* vms.list;
+  it.effect.skipIf(!NodeFS.existsSync("/proc/self/stat"))(
+    "keeps only running VMs that had work alive",
+    () => {
+      const vm = (sandboxId: string, status: SandboxInfo["status"], label = `vm ${sandboxId}`) => ({
+        ref: { providerId: "boat" as const, sandboxId },
+        status,
+        label,
+      });
+      const { record, layer } = makeHarness({
+        vms: [
+          vm("busy", "running"),
+          vm("quiet", "running"),
+          vm("archived", "stopped"),
+          vm("job-node", "running", "sandbox job 1"),
+          vm("deleted", "destroyed", "old sandbox"),
+        ],
+      });
+      return Effect.gen(function* () {
+        yield* fakeServer("busy", "sleep 60 &");
+        yield* fakeServer("job-node", "sleep 60 &");
+        yield* fakeServer("quiet");
+        const vms = yield* BoatVmService.BoatVmService;
 
-      assert.deepEqual(record.extended, [{ sandboxId: "busy", minutes: 30 }]);
-      assert.deepEqual(listed.sandboxIds, ["busy", "quiet", "archived", "job-node"]);
-      assert.deepEqual(
-        listed.vms.map((entry) => entry.label),
-        ["busy", "quiet", "archived"],
-      );
-    }).pipe(Effect.provide(layer));
-  });
+        yield* vms.keepAlive;
+        const listed = yield* vms.list;
 
-  it.effect.skipIf(!NodeFS.existsSync("/proc/net/tcp"))(
-    "counts a connected client and anything the server runs as work",
+        assert.deepEqual(record.extended, [{ sandboxId: "busy", minutes: 30 }]);
+        assert.deepEqual(listed.sandboxIds, ["busy", "quiet", "archived", "job-node"]);
+        assert.deepEqual(
+          listed.vms.map((entry) => entry.label),
+          ["busy", "quiet", "archived"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer));
+    },
+  );
+
+  it.effect.skipIf(!NodeFS.existsSync("/proc/self/exe"))(
+    "counts what the server runs as work, not its resource monitor or fresh state writes",
     () => {
       const running = (sandboxId: string) => ({
         ref: { providerId: "boat" as const, sandboxId },
@@ -1285,49 +1299,35 @@ describe("BoatVmService", () => {
         label: `vm ${sandboxId}`,
       });
       const { record, layer } = makeHarness({
-        vms: [running("connected"), running("working"), running("idle-server")],
+        vms: [running("working"), running("monitored"), running("written")],
       });
-      const writePid = (sandboxId: string, pid: number) => {
-        const state = NodePath.join(homeOf(sandboxId), ".t3", "ssh-launch", "sandbox");
-        NodeFS.mkdirSync(state, { recursive: true });
-        NodeFS.writeFileSync(NodePath.join(state, "pid"), `${pid}\n`);
-      };
-      // This test process stands in for a server running a terminal; the
-      // terminal itself is a server with nothing under it.
-      const terminal = NodeChildProcess.spawn("sleep", ["60"], { stdio: "ignore" });
-      writePid("working", process.pid);
-      writePid("idle-server", terminal.pid!);
-      return Effect.acquireUseRelease(
-        Effect.promise(
-          () =>
-            new Promise<{ server: NodeNet.Server; client: NodeNet.Socket }>((resolve) => {
-              const server = NodeNet.createServer();
-              server.listen(0, "127.0.0.1", () => {
-                const { port } = server.address() as NodeNet.AddressInfo;
-                const client = NodeNet.connect(port, "127.0.0.1");
-                server.once("connection", () => resolve({ server, client }));
-              });
-            }),
-        ),
-        ({ server }) =>
-          Effect.gen(function* () {
-            const { port } = server.address() as NodeNet.AddressInfo;
-            record.busyPorts.set("connected", BoatVmService.busyPortArg(port));
-
-            yield* (yield* BoatVmService.BoatVmService).keepAlive;
-
-            assert.sameMembers(
-              record.extended.map((entry) => entry.sandboxId),
-              ["connected", "working"],
-            );
-          }).pipe(Effect.provide(layer)),
-        ({ server, client }) =>
-          Effect.sync(() => {
-            terminal.kill();
-            client.destroy();
-            server.close();
-          }),
+      // The resource monitor runs for the server's whole life; a copy of sleep stands in for it.
+      const monitor = NodePath.join(NodeFS.realpathSync(scratch), "t3-resource-monitor");
+      NodeFS.copyFileSync(
+        NodeChildProcess.execFileSync("sh", ["-c", "command -v sleep"], {
+          encoding: "utf8",
+        }).trim(),
+        monitor,
       );
+      const userdata = NodePath.join(homeOf("written"), ".t3", "userdata");
+      NodeFS.mkdirSync(userdata, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(userdata, "statev2.sqlite-wal"), "");
+      return Effect.gen(function* () {
+        yield* fakeServer("working", "sleep 60 &");
+        // Ready only once the fork has become the monitor, so it is not counted as the shell.
+        yield* fakeServer(
+          "monitored",
+          `"${monitor}" 60 &\nwhile [ "$(readlink /proc/$!/exe)" != "${monitor}" ]; do :; done`,
+        );
+        yield* fakeServer("written");
+
+        yield* (yield* BoatVmService.BoatVmService).keepAlive;
+
+        assert.deepEqual(
+          record.extended.map((entry) => entry.sandboxId),
+          ["working"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer));
     },
   );
 });
@@ -1851,6 +1851,11 @@ const makeLifecycleHarness = (
           });
           return Effect.succeed({ exitCode: 0, stdout, stderr: "" });
         }
+        if (command.script === BoatVmService.BUSY_SCRIPT) {
+          // A running thread's agent runs under the VM's server.
+          const busy = vm?.threads.some((thread) => thread.status === "running") ?? false;
+          return Effect.succeed({ exitCode: busy ? 0 : 1, stdout: "", stderr: "" });
+        }
         if (command.script === BoatVmLifecycle.THREAD_SNAPSHOT_SCRIPT) {
           const threadId = command.args?.[0] ?? "";
           input.fetched?.push(threadId);
@@ -2137,11 +2142,6 @@ describe("boat VM lifecycle", () => {
               outcome: "created" as const,
             }),
     });
-    for (const sandboxId of ["snoozed", "quiet", "working"]) {
-      const userdata = NodePath.join(homeOf(sandboxId), ".t3", "userdata");
-      NodeFS.mkdirSync(userdata, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(userdata, "statev2.sqlite-wal"), "");
-    }
     return Effect.gen(function* () {
       yield* TestClock.setTime(nowMs);
       yield* pass;
