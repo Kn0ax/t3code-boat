@@ -16,7 +16,7 @@ There are three nouns, and they do not share a saved key:
 
 [`SandboxProviderShape`](../../packages/sandbox-core/src/SandboxProvider.ts) is the contract. The boat
 adapter is [`@t3tools/sandbox-boat`](../../packages/sandbox-boat/src/factory.ts), built with `noEnv`
-and monitoring off. `SandboxProviderId` is the literal `"boat"`. The IPC contract restates that
+and the account's monitoring default. `SandboxProviderId` is the literal `"boat"`. The IPC contract restates that
 literal so the renderer does not depend on sandbox-core, and
 [`DesktopSandboxProviders.ts`](../../apps/desktop/src/sandbox/DesktopSandboxProviders.ts) fails to
 compile if the two lists drift. Desktop main and the server both dynamic-import the boat package and

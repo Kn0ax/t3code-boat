@@ -1,7 +1,8 @@
 /**
  * The boat adapter as desktop and the server construct it: no account
- * environment unless one is named, and no command monitoring, which would keep
- * the pairing credential boat would otherwise store.
+ * environment unless one is named, and the account's monitoring default, so
+ * boat keeps command output and process history. That output includes the
+ * one-time pairing credential, which expires minutes after the bootstrap uses it.
  */
 import type { SandboxProviderShape } from "@t3tools/sandbox-core";
 import * as Effect from "effect/Effect";
@@ -19,7 +20,6 @@ export function boatSandboxProvider(
       ...(options.environment === undefined
         ? { noEnv: true }
         : { environment: options.environment }),
-      monitoring: false,
     }),
   );
 }
