@@ -4,7 +4,15 @@ T3 Code with [boat](https://boat.dev) VMs: pick a VM in **Run on** and the threa
 
 ### Install
 
-Get a build from [releases](https://github.com/Kn0ax/t3code-boat/releases):
+On Mac (Apple silicon) or Linux:
+
+```bash
+curl -fsSL https://t3-boat.kn0.dev/install.sh | sh
+```
+
+Mac gets `T3 Code (Boat).app` in Applications. Linux gets the server as `t3-boat` in `~/.local/bin`; start it with `t3-boat serve`.
+
+Or get a build from [releases](https://github.com/Kn0ax/t3code-boat/releases):
 
 - **Mac:** open the `arm64.dmg`, drag **T3 Code (Boat)** to Applications, then run:
   ```bash
@@ -12,6 +20,14 @@ Get a build from [releases](https://github.com/Kn0ax/t3code-boat/releases):
   ```
 - **Linux:** unpack `t3-<version>-linux-<arch>.tar.gz` and run `./t3 serve` inside the folder.
 - **Android:** install the `.apk` (shows up as **T3 Code Preview**).
+
+### Keep a Linux server running
+
+```bash
+t3-boat service install
+```
+
+Then the app's **Update** button (or `t3-boat update`) updates it from this fork's releases.
 
 ### Use boat VMs
 

@@ -90,16 +90,16 @@ conversation.
    it.
 
 Only the server that holds the key keeps VMs running, so put it on a machine
-that stays on. A VM started from the desktop app stops when that computer
-sleeps or the app quits.
+that stays on, running as a [background service](background-service.md). A VM
+started from the desktop app stops when that computer sleeps or the app quits.
 
 ### Start a thread on a VM
 
 In a new thread, open **Run on** (on mobile, the environment picker):
 
-- **An existing VM** shows whether it is running or stopped. A stopped VM
-  starts when you pick it.
-- **New boat VM** asks for a size, then starts a VM for the thread's
+- **An existing VM** has one line with a status badge. Hover it
+  for details. A stopped VM starts when you pick it.
+- **New boat VM** opens the sizes. Pick one to start a VM for the thread's
   repository. A **No project** thread can use one too.
 
 A new VM starts from your snapshot named `t3-<owner>-<repo>` if there is one,
