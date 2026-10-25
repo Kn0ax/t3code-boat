@@ -25,6 +25,7 @@ import {
   type BoatVmCancelLaunchResult,
   type BoatVmBroughtHome,
   type BoatVmCatalog,
+  type BoatVmCreateBaseSnapshotInput,
   type BoatVmDesktop,
   type BoatVmDesktopInput,
   type BoatVmLaunchInput,
@@ -50,6 +51,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  buildSandboxStopScript,
   formatSandboxLaunchEnv,
   SANDBOX_LAUNCH_ENV_PATH,
   SANDBOX_STATE_KEY,
@@ -68,6 +70,7 @@ import { importBranchesBundle, runGit } from "@t3tools/sandbox-handoff";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -165,6 +168,30 @@ sudo tailscale status --json | node -e 'let s="";process.stdin.on("data",(d)=>{s
 // Releases a VM's tailnet node before boat deletes it, so it does not linger.
 export const TAILNET_LOGOUT_SCRIPT = `sudo tailscale logout >/dev/null 2>&1 || true
 `;
+
+// Leaves a base snapshot's VM with T3, the agent CLIs and Tailscale installed,
+// but nothing that belongs to one machine or person: no tailnet node, T3 data,
+// logins or shell history. A boat environment's logins land on the VM too, and
+// every VM started from the snapshot gets them afresh.
+export const BASE_SNAPSHOT_CLEAN_SCRIPT = `set -u
+if ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1 || true
+fi
+sudo tailscale logout >/dev/null 2>&1 || true
+sudo systemctl disable --now tailscaled >/dev/null 2>&1 || true
+sudo rm -f /var/lib/tailscale/tailscaled.state
+rm -rf "$HOME/.t3/userdata" "$HOME/.t3/launch-env" "$HOME/.t3/model-proxy-base-url" "$HOME/.t3/tailscale-authkey" "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/server.log"
+gh auth logout -h github.com >/dev/null 2>&1 || true
+rm -f "$HOME/.git-credentials" "$HOME/.config/gh/hosts.yml" "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json" "$HOME/.bash_history"
+for KEY in credential.helper credential.https://github.com.helper credential.https://gist.github.com.helper; do
+  git config --global --unset-all "$KEY" >/dev/null 2>&1 || true
+done
+sync
+`;
+
+// boat captures a running VM before saving it, which can take many minutes.
+const BASE_SNAPSHOT_POLL = Schedule.spaced("30 seconds");
+const BASE_SNAPSHOT_POLL_LIMIT = 120;
 
 // The snapshot's boot service owns login and hostname. Wait for its actual
 // connection instead of racing it or resetting a resumed machine's identity.
@@ -880,6 +907,14 @@ export class BoatVmService extends Context.Service<
     /** Starts saving a VM as a named snapshot; boat answers before the capture finishes. */
     readonly saveSnapshot: (
       input: BoatVmSaveSnapshotInput,
+    ) => Effect.Effect<BoatVmSnapshotState, BoatVmError>;
+    /**
+     * Starts a plain VM with T3 and the agent CLIs, clears what ties it to this
+     * account's machines and logins, and saves it under `name`. Answers once boat
+     * is saving; the VM is deleted when the save settles.
+     */
+    readonly createBaseSnapshot: (
+      input: BoatVmCreateBaseSnapshotInput,
     ) => Effect.Effect<BoatVmSnapshotState, BoatVmError>;
     /** The VM's desktop stream URL, or `provisioning` until boat has it ready. */
     readonly desktop: (input: BoatVmDesktopInput) => Effect.Effect<BoatVmDesktop, BoatVmError>;
@@ -2008,10 +2043,96 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     );
   }
 
-  const catalogOperations = BoatCatalog.makeOperations(
+  const { snapshotStatus, ...catalogOperations } = BoatCatalog.makeOperations(
     getSettings,
     options.resolveCatalog ?? BoatCatalog.resolveBoatCatalog,
   );
+
+  const createBaseSnapshot = Effect.fn("BoatVmService.createBaseSnapshot")(function* (
+    input: BoatVmCreateBaseSnapshotInput,
+  ) {
+    const settings = yield* getSettings;
+    const started = yield* Deferred.make<BoatVmSnapshotState, BoatVmError>();
+    // The VM outlives this request, so the provider's scope does too.
+    yield* Effect.forkIn(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const provider = yield* requireProvider(settings);
+          const { ref } = yield* manager
+            .provision({
+              provider,
+              target: {
+                // Not a boat VM name, so Run on and the VM lifecycle leave it alone.
+                label: `snapshot ${input.name}`,
+                size: "small",
+                idleTimeoutMinutes: settings.boatVmIdleMinutes,
+                t3Version,
+                installAgentClis: true,
+              },
+              env: {},
+              idempotencyKey: `boat-base-snapshot:${yield* crypto.randomUUIDv4()}`,
+            })
+            .pipe(Effect.mapError((error) => vmError(error.message)));
+          const saving = yield* Effect.gen(function* () {
+            yield* provider
+              .exec(ref, { script: buildSandboxStopScript(), timeoutMs: 60_000 })
+              .pipe(Effect.ignore);
+            const cleaned = yield* provider.exec(ref, {
+              script: BASE_SNAPSHOT_CLEAN_SCRIPT,
+              timeoutMs: 300_000,
+            });
+            if (cleaned.exitCode !== 0) {
+              return yield* vmError("Could not prepare the VM for a snapshot.");
+            }
+            return yield* catalogOperations.saveSnapshot({
+              sandboxId: ref.sandboxId,
+              name: input.name,
+            });
+          }).pipe(
+            Effect.mapError((error) =>
+              error._tag === "BoatVmError" ? error : vmError(describe(error)),
+            ),
+            Effect.tapError(() => discardFailedVm({ provider, ref })),
+          );
+          yield* Deferred.succeed(started, saving);
+          const settled = yield* snapshotStatus(input.name).pipe(
+            Effect.map((state) => state.status),
+            Effect.orElseSucceed(() => "saving"),
+            Effect.repeat({
+              schedule: BASE_SNAPSHOT_POLL,
+              until: (status) => status !== "saving",
+              times: BASE_SNAPSHOT_POLL_LIMIT,
+            }),
+          );
+          if (settled === "saving") {
+            // Deleting it now would cancel the save; boat's stop timer stops it.
+            return yield* Effect.logWarning("boat.vm.baseSnapshot.stillSaving", {
+              sandboxId: ref.sandboxId,
+              name: input.name,
+            });
+          }
+          yield* Effect.logInfo("boat.vm.baseSnapshot.settled", {
+            name: input.name,
+            status: settled,
+          });
+          yield* discardFailedVm({ provider, ref });
+        }),
+      ).pipe(
+        Effect.mapError((error) =>
+          error._tag === "BoatVmError" ? error : vmError(describe(error)),
+        ),
+        Effect.catch((error) =>
+          Deferred.fail(started, error).pipe(
+            Effect.andThen(
+              Effect.logWarning("boat.vm.baseSnapshot.failed", { error: error.message }),
+            ),
+          ),
+        ),
+      ),
+      scope,
+    );
+    return yield* Deferred.await(started);
+  });
 
   return BoatVmService.of({
     list,
@@ -2023,6 +2144,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
     bringHome,
     keepAlive,
     ...catalogOperations,
+    createBaseSnapshot,
   });
 });
 

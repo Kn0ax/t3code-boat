@@ -3,6 +3,7 @@ import {
   BoatVmBringHomeResult,
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
+  BoatVmCreateBaseSnapshotInput,
   BoatVmSnapshotState,
   BoatVmThreadContinueInput,
   BoatVmThreadContinueResult,
@@ -245,6 +246,22 @@ const BoatVmSaveSnapshotTool = Tool.make("boat_vm_save_snapshot", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+const BoatVmCreateBaseSnapshotTool = Tool.make("boat_vm_create_base_snapshot", {
+  description:
+    "Create a base boat snapshot: start a small plain VM, install T3, Claude Code, Codex and Tailscale on it, save it under the given name (usually t3-base), then delete the VM. New VMs start from the Base snapshot set in Settings when the repository has no snapshot of its own. Reusing a name replaces that snapshot once the new one is ready. Returns once boat is saving; the whole run takes several minutes." +
+    ON_MANAGER,
+  parameters: BoatVmCreateBaseSnapshotInput,
+  success: BoatVmSnapshotState,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: boatVmDependencies,
+})
+  .annotate(Tool.Title, "Create a base boat snapshot")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
 export const SandboxToolkit = Toolkit.make(
   SandboxJobStartTool,
   SandboxJobStatusTool,
@@ -259,4 +276,5 @@ export const SandboxToolkit = Toolkit.make(
   BoatVmThreadContinueTool,
   BoatVmBringHomeTool,
   BoatVmSaveSnapshotTool,
+  BoatVmCreateBaseSnapshotTool,
 );

@@ -49,6 +49,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.boatVmsBringHome]: AuthOrchestrationOperateScope,
   // Writes a snapshot to the server's boat account, replacing one of the same name.
   [WS_METHODS.boatVmsSaveSnapshot]: AuthOrchestrationOperateScope,
+  // Starts a billable VM and writes a snapshot, replacing one of the same name.
+  [WS_METHODS.boatVmsCreateBaseSnapshot]: AuthOrchestrationOperateScope,
   // Removes a new VM the launch made.
   [WS_METHODS.boatVmsCancelLaunch]: AuthOrchestrationOperateScope,
   // Hands out a URL that carries a token for the VM's desktop.

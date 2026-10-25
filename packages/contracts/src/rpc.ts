@@ -370,6 +370,7 @@ import {
   BoatVmLaunchResult,
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
+  BoatVmCreateBaseSnapshotInput,
   BoatVmSnapshotState,
 } from "./boatVms.ts";
 import {
@@ -583,6 +584,7 @@ export const WS_METHODS = {
   boatVmsBringHome: "boatVms.bringHome",
   boatVmsCatalog: "boatVms.catalog",
   boatVmsSaveSnapshot: "boatVms.saveSnapshot",
+  boatVmsCreateBaseSnapshot: "boatVms.createBaseSnapshot",
   boatVmsCancelLaunch: "boatVms.cancelLaunch",
   boatVmsDesktop: "boatVms.desktop",
   subscribeBoatVmLaunches: "subscribeBoatVmLaunches",
@@ -1221,6 +1223,14 @@ const WsBoatVmsCatalogRpc = Rpc.make(WS_METHODS.boatVmsCatalog, {
 // Starts saving a VM as a named snapshot; poll the catalog until it is ready or failed.
 const WsBoatVmsSaveSnapshotRpc = Rpc.make(WS_METHODS.boatVmsSaveSnapshot, {
   payload: BoatVmSaveSnapshotInput,
+  success: BoatVmSnapshotState,
+  error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
+});
+
+// Starts a plain VM, saves it as a named snapshot, and deletes it once the save settles.
+// Answers when boat starts saving; poll the catalog until it is ready or failed.
+const WsBoatVmsCreateBaseSnapshotRpc = Rpc.make(WS_METHODS.boatVmsCreateBaseSnapshot, {
+  payload: BoatVmCreateBaseSnapshotInput,
   success: BoatVmSnapshotState,
   error: Schema.Union([BoatVmError, EnvironmentAuthorizationError]),
 });
@@ -2067,6 +2077,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsBoatVmsBringHomeRpc,
   WsBoatVmsCatalogRpc,
   WsBoatVmsSaveSnapshotRpc,
+  WsBoatVmsCreateBaseSnapshotRpc,
   WsBoatVmsCancelLaunchRpc,
   WsBoatVmsDesktopRpc,
   WsSubscribeBoatVmLaunchesRpc,

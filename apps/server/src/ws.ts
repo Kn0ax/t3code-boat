@@ -2620,6 +2620,7 @@ export const layerWsRpc = (
         [WS_METHODS.boatVmsBringHome]: (input) => boatVms.bringHome(input),
         [WS_METHODS.boatVmsCatalog]: () => boatVms.catalog,
         [WS_METHODS.boatVmsSaveSnapshot]: (input) => boatVms.saveSnapshot(input),
+        [WS_METHODS.boatVmsCreateBaseSnapshot]: (input) => boatVms.createBaseSnapshot(input),
         [WS_METHODS.boatVmsCancelLaunch]: (input) => boatVms.cancelLaunch(input),
         [WS_METHODS.boatVmsDesktop]: (input) => boatVms.desktop(input),
         [WS_METHODS.subscribeBoatVmLaunches]: () => boatVms.launches,

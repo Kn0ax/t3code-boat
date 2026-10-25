@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
 import {
   OrchestrationV2ThreadDetailSnapshot,
+  parseBoatVmSandboxLabel,
   ProjectId,
   ThreadId,
   type OrchestrationProjectShell,
@@ -25,6 +26,7 @@ import {
   type SandboxRef,
 } from "@t3tools/sandbox-core";
 import { makeFakeSandboxProvider } from "@t3tools/sandbox-core/testing";
+import type { BoatCatalogShape } from "@t3tools/sandbox-boat";
 import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -256,6 +258,8 @@ const makeHarness = (input: {
   readonly baseDir?: string;
   /** This server's tailnet origin for VMs to link back to; none when omitted. */
   readonly managerUrl?: string;
+  /** The boat account's snapshots; none when omitted. */
+  readonly catalog?: BoatCatalogShape;
 }) => {
   const record: Record = {
     targets: [],
@@ -284,6 +288,7 @@ const makeHarness = (input: {
         Effect.succeed(settings.providerKeys.boat === "" ? undefined : provider),
       t3Version: "0.0.0-test",
       keepAliveInterval: null,
+      resolveCatalog: () => Effect.succeed(input.catalog),
     }),
   ).pipe(
     Layer.provide(Layer.succeed(SandboxEnvironmentManager, input.manager?.(manager) ?? manager)),
@@ -3099,6 +3104,68 @@ describe("continuing a copy whose boat VM was deleted", () => {
       yield* pass;
       assert.deepEqual(record.stopped, ["quiet"]);
       assert.deepEqual(atStop, ["refs/t3/boat/quiet/feature\nrefs/t3/boat/quiet/main\n"]);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("BoatVmService base snapshot", () => {
+  const catalogOf = (events: Array<string>, statuses: Array<string>): BoatCatalogShape => ({
+    snapshots: Effect.succeed([]),
+    environments: Effect.succeed([]),
+    saveSnapshot: (input) =>
+      Effect.sync(() => {
+        events.push(`save:${input.sandboxId} ${input.name}`);
+        return { name: input.name, status: "saving" };
+      }),
+    snapshotStatus: (name) => Effect.sync(() => ({ name, status: statuses.shift() ?? "saving" })),
+    desktop: () => Effect.die("No desktop expected"),
+  });
+  const cleaningWith =
+    (events: Array<string>, exitCode: number) => (provider: SandboxProviderShape) => ({
+      ...provider,
+      exec: (ref: SandboxRef, command: { readonly script: string }) =>
+        command.script === BoatVmService.BASE_SNAPSHOT_CLEAN_SCRIPT
+          ? Effect.sync(() => {
+              events.push(`clean:${ref.sandboxId}`);
+              return { exitCode, stdout: "", stderr: "" };
+            })
+          : provider.exec(ref, command as Parameters<SandboxProviderShape["exec"]>[1]),
+    });
+
+  it.effect("saves a cleaned plain VM and deletes it once boat has saved it", () => {
+    const events: Array<string> = [];
+    const { layer, record } = makeHarness({
+      provider: cleaningWith(events, 0),
+      catalog: catalogOf(events, ["saving", "ready"]),
+    });
+    return Effect.gen(function* () {
+      const vms = yield* BoatVmService.BoatVmService;
+      const started = yield* vms.createBaseSnapshot({ name: "t3-base" });
+      assert.deepEqual(started, { name: "t3-base", status: "saving" });
+      assert.deepEqual(events, ["clean:new", "save:new t3-base"]);
+      const target = record.targets[0];
+      assert.equal(target?.snapshot, undefined);
+      assert.equal(target?.label, "snapshot t3-base");
+      assert.isNull(parseBoatVmSandboxLabel(target?.label ?? ""));
+      assert.deepEqual(record.destroyed, []);
+
+      yield* TestClock.adjust("30 seconds");
+      assert.deepEqual(record.destroyed, ["new"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("deletes the VM and saves nothing when it cannot be cleaned", () => {
+    const events: Array<string> = [];
+    const { layer, record } = makeHarness({
+      provider: cleaningWith(events, 1),
+      catalog: catalogOf(events, []),
+    });
+    return Effect.gen(function* () {
+      const vms = yield* BoatVmService.BoatVmService;
+      const error = yield* Effect.flip(vms.createBaseSnapshot({ name: "t3-base" }));
+      assert.include(error.message, "prepare the VM");
+      assert.deepEqual(events, ["clean:new"]);
+      assert.deepEqual(record.destroyed, ["new"]);
     }).pipe(Effect.provide(layer));
   });
 });

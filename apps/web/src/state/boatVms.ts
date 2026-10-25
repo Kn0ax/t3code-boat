@@ -71,6 +71,19 @@ export function useBoatVmPairings(): ReadonlyArray<BoatVmPairing> {
   return [...catalog.entries.values()].map(boatVmPairingOf);
 }
 
+/** The saved environments that are boat VMs. */
+export function useBoatVmEnvironmentIds(): ReadonlySet<EnvironmentId> {
+  return new Set(
+    useBoatVmPairings()
+      .filter(
+        (pairing) =>
+          pairing.recorded !== null ||
+          (pairing.hostname !== null && isBoatVmTailnetHostname(pairing.hostname)),
+      )
+      .map((pairing) => pairing.environmentId),
+  );
+}
+
 /** boatVmCopyTarget for a thread action, read from the current state. */
 export const readBoatVmCopyTarget = (target: ScopedThreadRef): ScopedThreadRef =>
   boatVmCopyTarget({
@@ -93,15 +106,8 @@ const reconciledBoatVmStatuses = new Map<EnvironmentId, BoatVm["status"]>();
  */
 export function useBoatVmSavedEnvironments(): void {
   const hostId = useBoatVmHostEnvironmentId();
-  const pairings = useBoatVmPairings();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const vmIds = pairings
-    .filter(
-      (pairing) =>
-        pairing.recorded !== null ||
-        (pairing.hostname !== null && isBoatVmTailnetHostname(pairing.hostname)),
-    )
-    .map((pairing) => pairing.environmentId);
+  const vmIds = [...useBoatVmEnvironmentIds()];
   const vmsQuery = useEnvironmentQuery(
     hostId === null || vmIds.length === 0
       ? null

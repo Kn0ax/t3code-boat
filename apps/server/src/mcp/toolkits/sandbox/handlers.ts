@@ -1,6 +1,7 @@
 import {
   BoatVmListResult,
   BoatVmSaveSnapshotInput,
+  BoatVmCreateBaseSnapshotInput,
   BoatVmSnapshotState,
   type BoatVmThreadContinueResult,
   BoatVmThreadLaunchInput,
@@ -252,6 +253,17 @@ const handlers = {
         result: BoatVmSnapshotState,
       },
       Effect.flatMap(boatVms, (vms) => vms.saveSnapshot(input)),
+    ).pipe(Effect.catchTags(boatFailures)),
+  ),
+  boat_vm_create_base_snapshot: McpToolAccess.boatVmTool("writesEnvironment", (input) =>
+    onManagerOr(
+      {
+        tool: "boat_vm_create_base_snapshot",
+        parameters: BoatVmCreateBaseSnapshotInput,
+        arguments: input,
+        result: BoatVmSnapshotState,
+      },
+      Effect.flatMap(boatVms, (vms) => vms.createBaseSnapshot(input)),
     ).pipe(Effect.catchTags(boatFailures)),
   ),
 } satisfies McpToolAccess.Handlers<typeof SandboxToolkit.tools>;

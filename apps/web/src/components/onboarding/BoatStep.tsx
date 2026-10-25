@@ -1,7 +1,8 @@
-import type {
-  BoatVmTailscaleMode,
-  SandboxJobSettingsPatch,
-  ServerConfig,
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type BoatVmTailscaleMode,
+  type SandboxJobSettingsPatch,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import { useState, type ReactNode } from "react";
 
@@ -15,6 +16,7 @@ import {
   BoatSnapshotPicker,
   BoatTailscalePicker,
 } from "../settings/BoatCatalogPickers";
+import { useCreateBaseSnapshot } from "../settings/useCreateBaseSnapshot";
 import { SecretKeyField } from "../settings/SecretKeyField";
 import { Button } from "../ui/button";
 
@@ -41,6 +43,12 @@ export function BoatStep({
   const keySaved = sandboxJobs.providerKeys.boat !== "";
   const catalog = useBoatCatalog(serverConfig.environment.environmentId, keySaved);
   const [baseSnapshot, setBaseSnapshot] = useState(sandboxJobs.boatVmBaseSnapshot);
+  const createBaseSnapshot = useCreateBaseSnapshot(serverConfig.environment.environmentId);
+  const baseSnapshotName =
+    baseSnapshot.trim() || DEFAULT_SERVER_SETTINGS.sandboxJobs.boatVmBaseSnapshot;
+  const baseSnapshotExists =
+    catalog.state === "ready" &&
+    catalog.snapshots.some((snapshot) => snapshot.name === baseSnapshotName);
   const [boatEnvironment, setBoatEnvironment] = useState(sandboxJobs.boatVmEnvironment);
   const [tailscale, setTailscale] = useState<BoatVmTailscaleMode>(sandboxJobs.boatVmTailscale);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>(
@@ -94,6 +102,25 @@ export function BoatStep({
                 onChange={setBaseSnapshot}
               />
             </Field>
+            {catalog.state === "ready" && !baseSnapshotExists ? (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  No {baseSnapshotName} snapshot yet. Create one so new VMs start with T3 and the
+                  agents installed.
+                </p>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={createBaseSnapshot.pending}
+                  onClick={() => {
+                    setBaseSnapshot(baseSnapshotName);
+                    void createBaseSnapshot.run(baseSnapshotName);
+                  }}
+                >
+                  {createBaseSnapshot.pending ? "Creating…" : "Create"}
+                </Button>
+              </div>
+            ) : null}
             <Field label="Boat environment">
               <BoatEnvironmentPicker
                 catalog={catalog}

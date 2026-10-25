@@ -139,6 +139,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.boatVmsBringHome]: "orchestration",
   [WS_METHODS.boatVmsCatalog]: "orchestration",
   [WS_METHODS.boatVmsSaveSnapshot]: "orchestration",
+  [WS_METHODS.boatVmsCreateBaseSnapshot]: "orchestration",
   [WS_METHODS.boatVmsCancelLaunch]: "orchestration",
   [WS_METHODS.boatVmsDesktop]: "orchestration",
   [WS_METHODS.subscribeBoatVmLaunches]: "orchestration",

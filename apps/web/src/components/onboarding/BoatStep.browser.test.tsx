@@ -20,6 +20,8 @@ vi.mock(import("../../state/use-atom-command"), () => ({
 vi.mock(import("../../state/boatSnapshots"), async (original) => ({
   ...(await original()),
   useBoatCatalog: (() => state.catalog) as never,
+  // A created snapshot stays saving for the rest of the test.
+  watchBoatSnapshotSave: (() => new Promise(() => {})) as never,
 }));
 
 import { BoatStep } from "./BoatStep";
@@ -89,4 +91,22 @@ it("saves the snapshot, environment, and Tailscale choices from the boat account
     },
   });
   expect(onContinue).toHaveBeenCalledOnce();
+});
+
+it("creates the missing base snapshot and keeps it as the choice", async () => {
+  setup({ state: "ready", snapshots: [], environments: [], refresh: () => {} });
+  const onContinue = vi.fn();
+  await using _screen = await render(
+    <BoatStep serverConfig={config("<redacted>")} onContinue={onContinue} />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Create" }));
+  expect(state.update).toHaveBeenCalledExactlyOnceWith({
+    environmentId: "host",
+    input: { name: "t3-base" },
+  });
+  await userEvent.click(page.getByRole("button", { name: "Continue" }));
+  expect(state.update).toHaveBeenLastCalledWith({
+    environmentId: "host",
+    input: { patch: { sandboxJobs: { boatVmBaseSnapshot: "t3-base" } } },
+  });
 });

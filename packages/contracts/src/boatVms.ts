@@ -408,6 +408,12 @@ export const BoatVmSaveSnapshotInput = Schema.Struct({
 });
 export type BoatVmSaveSnapshotInput = typeof BoatVmSaveSnapshotInput.Type;
 
+export const BoatVmCreateBaseSnapshotInput = Schema.Struct({
+  /** Reusing a name replaces that snapshot once the new save is ready. */
+  name: BoatSnapshotName,
+});
+export type BoatVmCreateBaseSnapshotInput = typeof BoatVmCreateBaseSnapshotInput.Type;
+
 export const BoatVmSnapshotState = Schema.Struct({
   name: TrimmedNonEmptyString,
   /** saving, ready or failed. */

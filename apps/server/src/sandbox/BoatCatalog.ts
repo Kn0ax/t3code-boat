@@ -99,5 +99,11 @@ export const makeOperations = (
     ),
   );
 
-  return { catalog, saveSnapshot, desktop };
+  const snapshotStatus = (name: string) =>
+    requireCatalog.pipe(
+      Effect.flatMap((account) => account.snapshotStatus(name)),
+      Effect.mapError(toVmError),
+    );
+
+  return { catalog, saveSnapshot, desktop, snapshotStatus };
 };

@@ -45,6 +45,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.boatVmsLaunch,
       WS_METHODS.boatVmsBringHome,
       WS_METHODS.boatVmsSaveSnapshot,
+      WS_METHODS.boatVmsCreateBaseSnapshot,
       WS_METHODS.boatVmsCancelLaunch,
       WS_METHODS.boatVmsDesktop,
     ]) {

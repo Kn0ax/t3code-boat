@@ -28,6 +28,8 @@ import { toastManager } from "./ui/toast";
 interface SaveTarget {
   readonly hostEnvironmentId: EnvironmentId;
   readonly vm: Pick<BoatVm, "sandboxId" | "label">;
+  /** The name to offer; the VM's repository snapshot name when omitted. */
+  readonly name?: string;
 }
 
 // Set by the command palette, which closes as its command runs, and rendered beside it.
@@ -62,7 +64,7 @@ function SaveBoatSnapshotDialog({
   const { vm, hostEnvironmentId } = target;
   const repositoryName = boatVmSnapshotNameForLabel(vm.label);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [name, setName] = useState(repositoryName);
+  const [name, setName] = useState(target.name ?? repositoryName);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveSnapshot = useAtomCommand(boatSnapshotEnvironment.saveSnapshot, {

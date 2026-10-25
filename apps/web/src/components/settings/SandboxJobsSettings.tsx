@@ -9,6 +9,7 @@ import { useState } from "react";
 
 import { setBoatVmHostEnvironmentId, useBoatVmHostEnvironmentId } from "../../state/boatVmHost";
 import { useBoatCatalog } from "../../state/boatSnapshots";
+import { useBoatVmEnvironmentIds } from "../../state/boatVms";
 import { useEnvironments } from "../../state/environments";
 import { resolveServerSelfUpdateCapability } from "../../versionSkew";
 import { Button } from "../ui/button";
@@ -23,6 +24,8 @@ import {
   BoatTailscalePicker,
   TAILSCALE_DESCRIPTIONS,
 } from "./BoatCatalogPickers";
+import { SaveVmAsSnapshotMenu } from "./SaveVmAsSnapshotMenu";
+import { useCreateBaseSnapshot } from "./useCreateBaseSnapshot";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SecretKeyField } from "./SecretKeyField";
@@ -169,14 +172,26 @@ export function SandboxJobsSettings() {
   const { scope, environment, selectScope } = useSettingsScope();
   const { environments } = useEnvironments();
   const hostEnvironmentId = useBoatVmHostEnvironmentId();
-  const eligibleEnvironmentIds = boatVmCapableEnvironmentIds(environments);
+  const vmEnvironmentIds = useBoatVmEnvironmentIds();
+  // A boat VM never manages others, and once one environment does, it is the only choice here.
+  const eligibleEnvironmentIds = boatVmCapableEnvironmentIds(environments).filter(
+    (id) => !vmEnvironmentIds.has(id),
+  );
+  const choiceEnvironmentIds =
+    hostEnvironmentId !== null && eligibleEnvironmentIds.includes(hostEnvironmentId)
+      ? [hostEnvironmentId]
+      : eligibleEnvironmentIds;
   if (
     scope.kind !== "environment" ||
     environment?.serverConfig?.environment.capabilities.sandboxJobs !== true
   ) {
     return (
       <SettingsSection id="sandbox-jobs" title="Sandbox jobs">
-        <SettingsScopeNotice target="environment" eligibleEnvironmentIds={eligibleEnvironmentIds}>
+        <SettingsScopeNotice
+          target="environment"
+          targetId="sandbox-jobs"
+          eligibleEnvironmentIds={choiceEnvironmentIds}
+        >
           {eligibleEnvironmentIds.length > 0
             ? "Choose one environment to manage Boat VMs and save their keys."
             : "Connect an environment running a version of T3 Code that supports Boat VMs to configure sandbox jobs."}
@@ -239,6 +254,13 @@ function SandboxJobsForm({
     environment?.environmentId ?? null,
     sandboxJobs.providerKeys.boat !== "",
   );
+  const createBaseSnapshot = useCreateBaseSnapshot(environment?.environmentId ?? null);
+  // None still offers the default name, and picks it once created.
+  const baseSnapshotName = sandboxJobs.boatVmBaseSnapshot || defaults.boatVmBaseSnapshot;
+  const baseSnapshotMissing =
+    catalog.state === "ready" &&
+    sandboxJobs.boatVmBaseSnapshot !== "" &&
+    !catalog.snapshots.some((snapshot) => snapshot.name === sandboxJobs.boatVmBaseSnapshot);
 
   return (
     <div className="space-y-4">
@@ -441,7 +463,13 @@ function SandboxJobsForm({
           serverScoped
           settingKeys={["sandboxJobs"]}
           description={`A new VM starts from the repository's snapshot, t3-<owner>-<repo>, else this one, else a plain VM. Choose None to skip it. Default ${defaults.boatVmBaseSnapshot}.`}
-          status={catalog.state === "error" ? <BoatCatalogError catalog={catalog} /> : undefined}
+          status={
+            catalog.state === "error" ? (
+              <BoatCatalogError catalog={catalog} />
+            ) : baseSnapshotMissing ? (
+              `There is no snapshot named ${sandboxJobs.boatVmBaseSnapshot} yet, so new VMs start plain. Create it, or save a VM you set up.`
+            ) : undefined
+          }
           control={
             <div className="w-48">
               <BoatSnapshotPicker
@@ -451,7 +479,29 @@ function SandboxJobsForm({
               />
             </div>
           }
-        />
+        >
+          {catalog.state === "ready" && environment ? (
+            <div className="flex flex-wrap gap-2 pb-3.5">
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={createBaseSnapshot.pending}
+                onClick={() => {
+                  if (sandboxJobs.boatVmBaseSnapshot === "") {
+                    update({ boatVmBaseSnapshot: baseSnapshotName });
+                  }
+                  void createBaseSnapshot.run(baseSnapshotName);
+                }}
+              >
+                {createBaseSnapshot.pending ? "Creating…" : `Create ${baseSnapshotName}`}
+              </Button>
+              <SaveVmAsSnapshotMenu
+                environmentId={environment.environmentId}
+                name={baseSnapshotName}
+              />
+            </div>
+          ) : null}
+        </SettingsRow>
         <SettingsRow
           title="Boat environment"
           serverScoped

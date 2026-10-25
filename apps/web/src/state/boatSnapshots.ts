@@ -25,6 +25,14 @@ export const boatSnapshotEnvironment = {
       key: ({ environmentId, input }) => `${environmentId}:${input.name}`,
     },
   }),
+  createBaseSnapshot: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "environment-data:boat-vms:create-base-snapshot",
+    tag: WS_METHODS.boatVmsCreateBaseSnapshot,
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ environmentId, input }) => `${environmentId}:${input.name}`,
+    },
+  }),
 };
 
 export type BoatCatalogView =
