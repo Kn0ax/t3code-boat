@@ -278,7 +278,7 @@ function SandboxJobsForm({
           title="Agent keys"
           serverScoped
           settingKeys={["sandboxJobs"]}
-          description="Every sandbox and boat VM gets these as environment variables, so its agents can sign in. Claude needs an Anthropic key; Codex needs an OpenAI key. Private repositories also need a GitHub token with read access."
+          description="Set on every sandbox and VM, over the same keys from the boat environment."
         >
           <div className="grid max-w-2xl gap-2 pb-3.5">
             {AGENT_KEYS.map((key) => (
@@ -414,24 +414,26 @@ function SandboxJobsForm({
           title="Managed by"
           description="The environment this device starts boat VMs and sandbox jobs through. It keeps the keys and settings below."
           control={
-            <Select
-              value={hostEnvironmentId}
-              onValueChange={(value) => {
-                const chosen = eligibleEnvironmentIds.find((id) => id === value);
-                if (chosen !== undefined) void setBoatVmHostEnvironmentId(chosen);
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="Managed by">
-                <SelectValue>{(value: EnvironmentId) => environmentLabel(value)}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {eligibleEnvironmentIds.map((id) => (
-                  <SelectItem key={id} value={id}>
-                    {environmentLabel(id)}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+            <div className="w-48">
+              <Select
+                value={hostEnvironmentId}
+                onValueChange={(value) => {
+                  const chosen = eligibleEnvironmentIds.find((id) => id === value);
+                  if (chosen !== undefined) void setBoatVmHostEnvironmentId(chosen);
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Managed by">
+                  <SelectValue>{(value: EnvironmentId) => environmentLabel(value)}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {eligibleEnvironmentIds.map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {environmentLabel(id)}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
           }
         />
         <SettingsRow
@@ -479,25 +481,27 @@ function SandboxJobsForm({
             ) : undefined
           }
           control={
-            <Select
-              value={sandboxJobs.boatVmSize}
-              onValueChange={(value) => {
-                if (SandboxJobSize.literals.includes(value as SandboxJobSize)) {
-                  update({ boatVmSize: value as SandboxJobSize });
-                }
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="boat VM size">
-                <SelectValue>{(value: SandboxJobSize) => SIZE_LABELS[value]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {SandboxJobSize.literals.map((size) => (
-                  <SelectItem key={size} value={size}>
-                    {SIZE_LABELS[size]}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+            <div className="w-48">
+              <Select
+                value={sandboxJobs.boatVmSize}
+                onValueChange={(value) => {
+                  if (SandboxJobSize.literals.includes(value as SandboxJobSize)) {
+                    update({ boatVmSize: value as SandboxJobSize });
+                  }
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="boat VM size">
+                  <SelectValue>{(value: SandboxJobSize) => SIZE_LABELS[value]}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {SandboxJobSize.literals.map((size) => (
+                    <SelectItem key={size} value={size}>
+                      {SIZE_LABELS[size]}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
           }
         />
         <SettingsRow
@@ -510,11 +514,13 @@ function SandboxJobsForm({
               : "Boat URLs are protected by a token and work through this environment. Tailscale connects directly within your private network. With a Boat URL, Tailscale below gives previews and webhooks the VM’s own address."
           }
           control={
-            <BoatConnectionPicker
-              value={sandboxJobs.boatVmConnectionMode}
-              tailscale={sandboxJobs.boatVmTailscale}
-              onChange={(boatVmConnectionMode) => update({ boatVmConnectionMode })}
-            />
+            <div className="w-48">
+              <BoatConnectionPicker
+                value={sandboxJobs.boatVmConnectionMode}
+                tailscale={sandboxJobs.boatVmTailscale}
+                onChange={(boatVmConnectionMode) => update({ boatVmConnectionMode })}
+              />
+            </div>
           }
         />
         <SettingsRow
@@ -523,11 +529,13 @@ function SandboxJobsForm({
           settingKeys={["sandboxJobs"]}
           description={TAILSCALE_DESCRIPTIONS[sandboxJobs.boatVmTailscale]}
           control={
-            <BoatTailscalePicker
-              value={sandboxJobs.boatVmTailscale}
-              connectionMode={sandboxJobs.boatVmConnectionMode}
-              onChange={(boatVmTailscale) => update({ boatVmTailscale })}
-            />
+            <div className="w-48">
+              <BoatTailscalePicker
+                value={sandboxJobs.boatVmTailscale}
+                connectionMode={sandboxJobs.boatVmConnectionMode}
+                onChange={(boatVmTailscale) => update({ boatVmTailscale })}
+              />
+            </div>
           }
         />
         {sandboxJobs.boatVmTailscale === "auth-key" ? (
