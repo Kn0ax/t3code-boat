@@ -375,8 +375,8 @@ describe("boatVmRunOnRow", () => {
     ] as const;
     const choices = boatVmRunOnChoices([], vms, () => null);
     expect(choices.vms.map((vm) => boatVmRunOnRow(vm))).toEqual([
-      { title: "acme/app", note: "Boat VM · running" },
-      { title: "No project", note: "Boat VM · stopped, starts when picked" },
+      { title: "acme/app", note: "Boat VM · running", status: "running" },
+      { title: "No project", note: "Boat VM · stopped, starts when picked", status: "stopped" },
     ]);
     expect(boatVmRunOnRow({ label: "acme/app", status: "creating" }).note).toBe(
       "Boat VM · starting",

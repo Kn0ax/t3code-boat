@@ -186,7 +186,7 @@ export function boatVmRunOnOptions(
     ...choices.machines.map(({ pairedBoatVm, ...machine }) => {
       if (pairedBoatVm === undefined) return machine;
       const row = boatVmRunOnRow(pairedBoatVm);
-      return { ...machine, label: row.title, boatVmNote: row.note };
+      return { ...machine, label: row.title, boatVmNote: row.note, boatVmStatus: row.status };
     }),
     ...choices.vms.map((vm) => entry(vm.sandboxId, boatVmRunOnRow(vm))),
     ...(newVm.disabledReason !== undefined || newVm.defaultSize === undefined
@@ -207,6 +207,7 @@ const entry = (sandboxId: string | null, row: BoatVmRunOnRow): EnvironmentOption
   machine: "cloud",
   boatVm: { sandboxId },
   boatVmNote: row.note,
+  ...(row.status === undefined ? {} : { boatVmStatus: row.status }),
 });
 
 /** The "New boat VM" entry, shown with the reason when it cannot be used. */

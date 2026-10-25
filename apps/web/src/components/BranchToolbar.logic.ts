@@ -28,9 +28,31 @@ export interface EnvironmentOption {
   boatVm?: { readonly sandboxId: string | null; readonly size?: SandboxJobSize };
   /** Why the entry cannot be picked; shown under it instead of hiding it. */
   disabledReason?: string;
-  /** Set on a boat VM, started or paired: what it is, shown under it with the boat mark. */
+  /** Set on a boat VM, started or paired: what it is, shown in its tooltip with the boat mark. */
   boatVmNote?: string;
+  /** Set on an existing boat VM: its state in a word, shown as a badge. */
+  boatVmStatus?: string | undefined;
 }
+
+/**
+ * "Run on" lists machines and existing boat VMs; "New boat VM" in each size
+ * goes behind one entry when there is more than one size to pick.
+ */
+export function splitNewBoatVmOptions(options: ReadonlyArray<EnvironmentOption>): {
+  readonly listed: ReadonlyArray<EnvironmentOption>;
+  readonly newBoatVms: ReadonlyArray<EnvironmentOption>;
+} {
+  const newBoatVms = options.filter((option) => option.boatVm?.sandboxId === null);
+  return newBoatVms.length > 1
+    ? { listed: options.filter((option) => option.boatVm?.sandboxId !== null), newBoatVms }
+    : { listed: options, newBoatVms: [] };
+}
+
+/** A size of "New boat VM" as its entry in the sizes reads, such as "Small". */
+export const newBoatVmSizeLabel = (option: EnvironmentOption): string => {
+  const size = option.boatVm?.size;
+  return size === undefined ? option.label : `${size[0]!.toUpperCase()}${size.slice(1)}`;
+};
 
 /** "Add to another machine" stays muted until hovered: easy to find, quieter than the machines. */
 export const ADD_TO_MACHINE_LABEL_CLASS =

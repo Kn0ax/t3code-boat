@@ -1,9 +1,10 @@
 import { BOAT_LOGO_PATH, BOAT_LOGO_VIEW_BOX } from "@t3tools/client-runtime/boat-vms";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
 import { CloudIcon, LaptopIcon, MonitorIcon, ServerIcon, type LucideProps } from "lucide-react";
-import type { FunctionComponent, SVGProps } from "react";
+import type { ComponentProps, FunctionComponent, SVGProps } from "react";
 import type { EnvironmentOption } from "./BranchToolbar.logic";
 import { LinuxIcon } from "./Icons";
+import { Badge } from "./ui/badge";
 
 function LucideLike(props: SVGProps<SVGSVGElement>) {
   return (
@@ -98,5 +99,35 @@ export function EnvironmentOptionIcon(props: {
     <BoatVmIcon aria-label="Boat VM" className={props.className} />
   ) : (
     <EnvironmentMachineIcon kind={props.option?.machine ?? "server"} className={props.className} />
+  );
+}
+
+const BOAT_VM_STATUS_BADGE_VARIANTS: Record<string, ComponentProps<typeof Badge>["variant"]> = {
+  running: "success",
+  starting: "info",
+  unavailable: "error",
+};
+
+/** A "Run on" entry on one line: its icon, label, and an existing boat VM's state as a badge. */
+export function EnvironmentOptionLabel(props: {
+  readonly option: EnvironmentOption;
+  readonly label?: string;
+  /** Short text kept on the line, muted, after the label. */
+  readonly note?: string | undefined;
+}) {
+  const status = props.option.boatVmStatus;
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      <EnvironmentOptionIcon option={props.option} className="size-3 shrink-0" />
+      <span className="min-w-0 flex-1 truncate">{props.label ?? props.option.label}</span>
+      {props.note !== undefined ? (
+        <span className="shrink-0 text-muted-foreground text-xs">{props.note}</span>
+      ) : null}
+      {status !== undefined ? (
+        <Badge size="sm" variant={BOAT_VM_STATUS_BADGE_VARIANTS[status] ?? "outline"}>
+          {status}
+        </Badge>
+      ) : null}
+    </span>
   );
 }

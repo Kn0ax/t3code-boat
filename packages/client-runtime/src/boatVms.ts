@@ -346,6 +346,8 @@ export function boatVmRunOnChoices<
 export interface BoatVmRunOnRow {
   readonly title: string;
   readonly note: string;
+  /** A VM's state in a word, for a badge beside the title. */
+  readonly status?: string;
 }
 
 const BOAT_VM_STATE_NOTES: Record<BoatVm["status"], string> = {
@@ -353,6 +355,15 @@ const BOAT_VM_STATE_NOTES: Record<BoatVm["status"], string> = {
   running: "running",
   stopping: "stopped, starts when picked",
   stopped: "stopped, starts when picked",
+  error: "unavailable",
+  destroyed: "deleted",
+};
+
+const BOAT_VM_STATE_BADGES: Record<BoatVm["status"], string> = {
+  creating: "starting",
+  running: "running",
+  stopping: "stopped",
+  stopped: "stopped",
   error: "unavailable",
   destroyed: "deleted",
 };
@@ -378,6 +389,7 @@ export function boatVmRunOnRow(
   return {
     title: boatVmTitle(vm.label),
     note: vm.task === undefined ? note : `${note} · ${vm.task}`,
+    status: BOAT_VM_STATE_BADGES[vm.status],
   };
 }
 

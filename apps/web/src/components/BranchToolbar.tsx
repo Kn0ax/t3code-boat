@@ -30,6 +30,7 @@ import {
   BoatVmIcon,
   EnvironmentMachineIcon,
   EnvironmentOptionIcon,
+  EnvironmentOptionLabel,
 } from "./EnvironmentMachineIcon";
 import { useRefreshBoatVmsOnOpen } from "../state/boatVms";
 import { useProject, useThreadShellsForProjectRefs } from "../state/entities";
@@ -43,7 +44,9 @@ import {
   resolveLockedWorkspaceLabel,
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
+  newBoatVmSizeLabel,
   shouldShowEnvironmentIndicator,
+  splitNewBoatVmOptions,
 } from "./BranchToolbar.logic";
 import {
   BranchToolbarBranchSelector,
@@ -287,34 +290,40 @@ const RunContextSelector = memo(function RunContextSelector({
   const runOnValue = autoEnvironmentLabel ? "auto" : environmentId;
   const onRunOnChange = (value: string) =>
     value === "auto" ? onAutoEnvironment?.() : onEnvironmentChange?.(value as EnvironmentId);
-  const machineEnvironments =
-    availableEnvironments?.filter((env) => env.boatVmNote === undefined) ?? [];
-  const boatVmEnvironments =
-    availableEnvironments?.filter((env) => env.boatVmNote !== undefined) ?? [];
-  const renderEnvironmentItem = (env: EnvironmentOption) => (
-    <MenuRadioItem
-      key={env.environmentId}
-      disabled={
-        envLocked ||
-        (!onEnvironmentChange && env.environmentId !== environmentId) ||
-        env.disabledReason !== undefined
-      }
-      value={env.environmentId}
-      closeOnClick
-    >
-      <span className="flex min-w-0 flex-col">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <EnvironmentOptionIcon option={env} className="size-3" />
-          <span className="min-w-0 truncate">{env.label}</span>
-        </span>
-        {(env.disabledReason ?? env.boatVmNote) !== undefined ? (
-          <span className="text-muted-foreground text-xs">
-            {env.disabledReason ?? env.boatVmNote}
-          </span>
-        ) : null}
-      </span>
-    </MenuRadioItem>
+  const { listed: listedEnvironments, newBoatVms } = splitNewBoatVmOptions(
+    availableEnvironments ?? [],
   );
+  // A new VM's size reads its specs inline; any other entry's detail is its tooltip.
+  const renderEnvironmentItem = (env: EnvironmentOption, size?: boolean) => {
+    const detail = env.disabledReason ?? env.boatVmNote;
+    const item = (
+      <MenuRadioItem
+        key={env.environmentId}
+        disabled={
+          envLocked ||
+          (!onEnvironmentChange && env.environmentId !== environmentId) ||
+          env.disabledReason !== undefined
+        }
+        value={env.environmentId}
+        closeOnClick
+        className="data-disabled:pointer-events-auto"
+      >
+        {size ? (
+          <EnvironmentOptionLabel option={env} label={newBoatVmSizeLabel(env)} note={detail} />
+        ) : (
+          <EnvironmentOptionLabel option={env} />
+        )}
+      </MenuRadioItem>
+    );
+    return detail === undefined || size ? (
+      item
+    ) : (
+      <Tooltip key={env.environmentId}>
+        <TooltipTrigger render={item} />
+        <TooltipPopup side="right">{detail}</TooltipPopup>
+      </Tooltip>
+    );
+  };
 
   if (isLocked) {
     return (
@@ -391,19 +400,19 @@ const RunContextSelector = memo(function RunContextSelector({
                     </span>
                   </MenuRadioItem>
                 )}
-                {machineEnvironments.map(renderEnvironmentItem)}
+                {listedEnvironments.map((env) => renderEnvironmentItem(env))}
               </MenuRadioGroup>
-              {boatVmEnvironments.length > 0 ? (
+              {newBoatVms.length > 0 ? (
                 <MenuSub>
                   <MenuSubTrigger>
                     <span className="flex min-w-0 items-center gap-1.5">
                       <BoatVmIcon aria-hidden="true" className="size-3" />
-                      <span className="min-w-0 truncate">Boat VMs</span>
+                      <span className="min-w-0 truncate">New boat VM</span>
                     </span>
                   </MenuSubTrigger>
                   <MenuSubPopup {...(!isPanel ? composerFloatingLayerProps : {})}>
                     <MenuRadioGroup value={runOnValue} onValueChange={onRunOnChange}>
-                      {boatVmEnvironments.map(renderEnvironmentItem)}
+                      {newBoatVms.map((env) => renderEnvironmentItem(env, true))}
                     </MenuRadioGroup>
                   </MenuSubPopup>
                 </MenuSub>
