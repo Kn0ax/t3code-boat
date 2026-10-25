@@ -76,125 +76,105 @@ Sandbox jobs**.
 
 ## boat VMs
 
-Save the same server boat key under **Settings → Integrations → Sandbox jobs**.
-The VM options are in the **Boat VMs** section below it. Once the key is saved,
-**Base snapshot** and **Boat environment** list your boat account's snapshots
-and environments. If boat cannot be reached, type the names instead. With the default **VM
-connection**, **Protected Boat URL**, T3 connects to the
-VM through the environment that holds the key, so no Tailscale is needed.
+A boat VM is a cloud machine running its own T3 Code. Pick one in **Run on**
+and the thread runs there, while your machine keeps a copy of the
+conversation.
 
-**Tailscale** decides whether a VM joins your tailnet:
+### Set up
 
-- **Off**: it does not. Its ports cannot be previewed directly.
-- **Auth key**: T3 joins it with a reusable, ephemeral Tailscale auth key you
-  save below the picker.
-- **Snapshot joins itself**: the snapshot logs in on its own. T3 waits for its
-  connection and preserves its Tailscale hostname and login. A saved auth key
-  is used only when the snapshot cannot log a VM in. A plain VM cannot join
-  this way.
+1. Open **Settings → Integrations → Sandbox jobs** and save your boat API key.
+2. Under **Boat VMs**, pick a **Base snapshot**. To give VMs your agent logins
+   and secrets, also pick a **Boat environment**.
+3. For private repositories, save a GitHub token there too. It is written to
+   the VM when it starts and removed from its disk, so snapshots never carry
+   it.
 
-With a Protected Boat URL, joining the tailnet gives the VM's ports and
-webhooks a direct address. Choose **VM connection → Tailscale** to connect to
-the VM directly within your tailnet instead, which needs Tailscale set to
-**Auth key** or **Snapshot joins itself**. Desktop and locally hosted HTTP clients connect over
-tailnet HTTP without waiting for a certificate. Web clients opened over HTTPS
-also require HTTPS certificates enabled for the tailnet.
+Only the server that holds the key keeps VMs running, so put it on a machine
+that stays on. A VM started from the desktop app stops when that computer
+sleeps or the app quits.
 
-In a new thread whose project has a Git remote, open **Run on** (on mobile, the
-new task's environment picker) and choose **New boat VM**, or an earlier VM. A new VM starts from a boat snapshot named
-`t3-<owner>-<repo>` (lowercase), else the **Base snapshot** (`t3-base` by
-default), else a plain VM. It checks the repository out at `~/work/<repo>` and
-joins the tailnet when Tailscale is set up. Cancelling a start deletes a new
-VM, as a failed start does; an earlier VM is kept. A **No project** thread can
-run on a boat VM too: it starts from the **Base snapshot**, else a plain VM, and
-stays a **No project** thread on the VM.
+### Start a thread on a VM
 
-To make a snapshot, set a VM up, then choose **Save boat VM as snapshot** in
-the command palette and pick the VM. The name defaults to `t3-<owner>-<repo>`,
-so new VMs for that repository start from it. Saving under an existing name
-replaces that snapshot once the new one is ready. A notification follows the
-save, which can take several minutes.
+In a new thread, open **Run on** (on mobile, the environment picker):
 
-A new VM gets no secrets from your boat account. To give it the agent logins
-and secrets of a boat environment, choose that environment under **Boat
-environment**. Only VMs you start from **Run on** attach it; agents' sandbox
-jobs never do.
+- **An existing VM** shows whether it is running or stopped. A stopped VM
+  starts when you pick it.
+- **New boat VM** asks for a size, then starts a VM for the thread's
+  repository. A **No project** thread can use one too.
 
-Save a GitHub token in the same settings for private repositories. The keys
-are written when the VM starts and deleted from its disk, so a snapshot does
-not carry them. Make sure the snapshot's Tailscale setup gives each new VM
-its own machine identity.
+A new VM starts from your snapshot named `t3-<owner>-<repo>` if there is one,
+else from the **Base snapshot** (`t3-base` by default), else from a plain VM.
+The repository is checked out at `~/work/<repo>`.
 
-A VM archives once nothing has happened on it for the minutes you set, 30 by
-default, and keeps its disk. Picking it again resumes it. Only the server that
-holds the boat key keeps VMs up, so run that server on a machine that stays
-on. A VM started from a desktop app archives when that computer sleeps or the
-app quits.
+To make a snapshot for a repository, set a VM up the way you like, then run
+**Save boat VM as snapshot** from the command palette. It is named
+`t3-<owner>-<repo>` by default, so the next VMs for that repository start from
+it.
 
-Agents on an environment without a boat key can use the VMs of the one that
-holds it, the boat manager. On the manager, create a pairing code in
-**Settings → Connections**. On the other environment, enter the manager's URL
-and the code under **Settings → Integrations → Sandbox jobs → Boat manager**
-and choose **Link**. Its agents can then list VMs, start threads on them and
-save snapshots, all on the manager. Bring work home on the manager, from its
-project for the repository. The link lasts 30 days; when it ends, pair again
-with a new code, or choose **Unlink** to remove it.
+### Your copy of the thread
 
-VMs the manager starts on your tailnet link back to it by themselves, so agents
-on a VM can start more VMs too. That link reaches only the boat VM tools, and a
-new one replaces it each time the VM starts. For this, the manager needs an
-address on your tailnet, such as one from Tailscale Serve.
+About every 3 minutes, the server copies each VM thread into its own project
+for that repository, or into **No project**.
 
-The server with the boat key also keeps a copy of every thread on its running
-VMs. About every 3 minutes it copies new messages and tool activity from the
-VM's threads to its own project for the same repository, or to its **No
-project** when it has none for that repository or the VM was started without
-one. Subagent threads are not copied on their own. Deleted threads are never
-copied, and deleting a thread on the VM deletes its copy.
+- While the VM exists, the copy is read-only. Choose **Open on VM** to keep
+  going on the VM; a stopped VM starts first.
+- Once the VM is deleted, just send a message in the copy. A new VM starts
+  with the conversation and the commits from the old one.
+- Settling, archiving, or deleting the copy counts as doing the same on the
+  VM.
 
-While boat still has the VM, running or stopped, the copy is read-only and
-points at the VM's thread: choose **Open on VM** in its composer to continue
-there. A stopped VM is started first, and a VM this device has not paired yet
-is paired. When this device lists the VM's own thread and can reach the VM, the
-copy is left out of the sidebar; while the VM is stopped, the copy shows
-instead. Settling or archiving the copy counts as settling the VM's thread, and
-deleting it counts as deleting the VM's thread: when nothing else on the VM is
-still open or running, the VM is deleted right away.
+### When a VM stops or is deleted
 
-Once the VM is deleted, choose **Continue on a new VM** in the copy's composer,
-or just send a message: a new VM starts for the same repository (or with no
-project), gets the conversation and the commits brought home from the old VM,
-checks out the thread's branch, and the message runs there. The copy is replaced
-by the new VM's thread. A copy that already ran a message on this server stays
-your own thread there.
+| When                                                                                      | What happens                                                          |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| No new message for the idle time you set (30 minutes by default), or every thread snoozed | The VM stops and keeps its disk. Picking it again resumes it.         |
+| Every thread settled or archived                                                          | The VM stops, and is deleted after 3 days unless you reopen a thread. |
+| Every thread deleted                                                                      | The VM is deleted at the next check.                                  |
 
-On the same check, it acts once every thread on a VM agrees, after copying the
-threads one last time:
+A VM you just started or resumed gets the full idle time before it can stop.
+Before stopping or deleting a running VM, the server brings its commits home.
+Uncommitted files and checkpoints are not kept.
 
-- Every thread snoozed, or without a message for the minutes you set, and no
-  subagent still running: the VM stops and keeps its disk. Picking it in **Run on**, or **Start VM** on its
-  thread, resumes it.
-- Every thread archived, settled, or deleted: the copies are settled and the VM
-  stops. If it stays that way for 3 days, the VM is deleted, even while
-  stopped. Reopening a copy, or a new message on the VM, keeps it. If a copy
-  fails, for example because no project there has that repository, the VM is
-  kept running and the copy retried.
-- Every thread deleted: the VM is deleted.
-- A VM you just started or resumed is left alone for the minutes you set,
-  unless every thread on it is deleted.
-
-Before it stops or deletes a running VM, the server brings the VM's commits home
-as with **Bring boat VM work home**. A copy keeps the conversation and tool
-activity, but not checkpoints or uncommitted files.
+### Bring work home
 
 **Bring boat VM work home** in the command palette fetches the VM's branches
-into the local checkout as `refs/t3/boat/<vm-id>/<branch>`. Nothing is pushed.
-Uncommitted files stay on the VM.
+into your checkout as `refs/t3/boat/<vm-id>/<branch>`. Nothing is pushed, and
+uncommitted files stay on the VM.
 
-In a thread on a boat VM, **Boat desktop** in the panel's **+** menu (V)
-shows the VM's screen. The first open can take a minute while boat starts
-the desktop. Treat its link like a password: anyone with it can see the
-desktop.
+### Tailscale
+
+By default (**VM connection → Protected Boat URL**), T3 reaches a VM through
+the server that holds the key, so you don't need Tailscale.
+
+To give a VM's ports and webhooks a direct address, set **Tailscale**:
+
+- **Off**: the VM stays off your tailnet.
+- **Auth key**: T3 joins it with a reusable, ephemeral auth key you save
+  below.
+- **Snapshot joins itself**: the snapshot logs in on its own. Make sure each
+  new VM gets its own machine identity.
+
+With either of the last two, **VM connection → Tailscale** connects to the VM
+directly. Web clients opened over HTTPS also need HTTPS certificates turned on
+for the tailnet.
+
+### Use the VMs from another machine
+
+1. On the server with the key, create a pairing code in **Settings →
+   Connections**.
+2. On the other machine, enter that server's URL and the code under
+   **Settings → Integrations → Sandbox jobs → Boat manager**, then choose
+   **Link**.
+
+Its agents can then list VMs, start threads on them, and save snapshots, all
+on that server. The link lasts 30 days. VMs on your tailnet link back by
+themselves, so their agents can start VMs too, as long as the server has a
+tailnet address (for example from Tailscale Serve).
+
+### See the VM's screen
+
+In a thread on a VM, choose **Boat desktop** from the panel's **+** menu (V).
+The first open can take a minute. Treat the link like a password.
 
 ## Shared options
 
