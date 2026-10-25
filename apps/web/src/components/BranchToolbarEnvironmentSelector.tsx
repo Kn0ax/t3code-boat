@@ -1,4 +1,4 @@
-import { ComposerSelectControl } from "./chat/ComposerControl";
+import { ComposerControl, ComposerControlChevron } from "./chat/ComposerControl";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "./ui/tooltip";
 import { useAtomValue } from "@effect/atom-react";
@@ -8,23 +8,12 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { PlusIcon, ScaleIcon } from "lucide-react";
 import { memo } from "react";
 
-import {
-  ADD_TO_MACHINE_LABEL_CLASS,
-  type EnvironmentOption,
-  newBoatVmSizeLabel,
-  splitNewBoatVmOptions,
-} from "./BranchToolbar.logic";
-import { EnvironmentOptionIcon, EnvironmentOptionLabel } from "./EnvironmentMachineIcon";
+import { ADD_TO_MACHINE_LABEL_CLASS, type EnvironmentOption } from "./BranchToolbar.logic";
+import { EnvironmentOptionIcon } from "./EnvironmentMachineIcon";
+import { RunOnMenuItems } from "./RunOnMenuItems";
 import { useComposerMenuProps } from "./chat/composerEventScope";
 import { useRefreshBoatVmsOnOpen } from "../state/boatVms";
-import {
-  Select,
-  SelectGroup,
-  SelectGroupLabel,
-  SelectItem,
-  SelectPopup,
-  SelectValue,
-} from "./ui/select";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 
 interface BranchToolbarEnvironmentSelectorProps {
   autoEnvironmentLabel?: string | undefined;
@@ -35,11 +24,6 @@ interface BranchToolbarEnvironmentSelectorProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   onAddToMachine?: (() => void) | undefined;
 }
-
-// Action values cannot collide with server-minted environment IDs.
-const AUTO_VALUE = "action:auto";
-const ADD_MACHINE_VALUE = "action:add-machine";
-const environmentValue = (id: EnvironmentId) => `env:${id}`;
 
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
   autoEnvironmentLabel,
@@ -58,48 +42,6 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   const activeEnvironment =
     availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
   const refreshBoatVms = useRefreshBoatVmsOnOpen(availableEnvironments);
-
-  const { listed: listedEnvironments, newBoatVms } = splitNewBoatVmOptions(availableEnvironments);
-  // A new VM's size reads its specs inline; any other entry's detail is its tooltip.
-  const renderEnvironmentItem = (env: EnvironmentOption, size?: boolean) => {
-    const detail = env.disabledReason ?? env.boatVmNote;
-    const item = (
-      <SelectItem
-        key={env.environmentId}
-        value={environmentValue(env.environmentId)}
-        disabled={
-          (onEnvironmentChange === undefined && env.environmentId !== environmentId) ||
-          env.disabledReason !== undefined
-        }
-        className="data-disabled:pointer-events-auto"
-      >
-        {size ? (
-          <EnvironmentOptionLabel option={env} label={newBoatVmSizeLabel(env)} note={detail} />
-        ) : (
-          <EnvironmentOptionLabel option={env} />
-        )}
-      </SelectItem>
-    );
-    return detail === undefined || size ? (
-      item
-    ) : (
-      <Tooltip key={env.environmentId}>
-        <TooltipTrigger render={item} />
-        <TooltipPopup side="right">{detail}</TooltipPopup>
-      </Tooltip>
-    );
-  };
-
-  const environmentItems = [
-    ...(onAutoEnvironment
-      ? [{ value: AUTO_VALUE, label: autoEnvironmentLabel ?? "Auto balance" }]
-      : []),
-    ...availableEnvironments.map((env) => ({
-      value: environmentValue(env.environmentId),
-      label: env.label,
-    })),
-    ...(onAddToMachine ? [{ value: ADD_MACHINE_VALUE, label: "Add to another machine" }] : []),
-  ];
 
   // The static label carries the xs control's height (h-7 sm:h-6) as well as
   // its padding: the composer context strip has no min-height of its own, and
@@ -125,26 +67,12 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   }
 
   return (
-    <Select
-      modal={false}
-      onOpenChange={refreshBoatVms}
-      value={autoEnvironmentLabel ? AUTO_VALUE : environmentValue(environmentId)}
-      onValueChange={(value) => {
-        if (value === ADD_MACHINE_VALUE) {
-          onAddToMachine?.();
-        } else if (value === AUTO_VALUE) {
-          onAutoEnvironment?.();
-        } else if (value?.startsWith("env:")) {
-          onEnvironmentChange?.(value.slice(4) as EnvironmentId);
-        }
-      }}
-      items={environmentItems}
-    >
+    <Menu modal={false} onOpenChange={refreshBoatVms}>
       <Tooltip>
         <TooltipTrigger
           render={
-            <ComposerSelectControl
-              size="xs"
+            <MenuTrigger
+              render={<ComposerControl size="xs" />}
               className="min-w-0 max-w-full"
               aria-label="Run on"
               data-composer-shortcut="composer.host"
@@ -158,47 +86,37 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
             <EnvironmentOptionIcon option={activeEnvironment} className="size-3 shrink-0" />
           )}
           <ComposerContextLabel>
-            <SelectValue />
+            {autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}
           </ComposerContextLabel>
+          <ComposerControlChevron size="xs" />
         </TooltipTrigger>
         <TooltipPopup>
           {autoEnvironmentLabel ?? activeEnvironment?.label ?? "Run on"}
           {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
-      <SelectPopup alignItemWithTrigger={false} {...composerFloatingLayerProps}>
-        <SelectGroup>
-          <SelectGroupLabel>Run on</SelectGroupLabel>
-          {onAutoEnvironment && (
-            <SelectItem
-              value={AUTO_VALUE}
-              onClick={() => {
-                if (autoEnvironmentLabel) onAutoEnvironment?.();
-              }}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <ScaleIcon className="size-3" aria-hidden="true" />
-                {autoEnvironmentLabel ?? "Auto balance"}
+      <MenuPopup align="start" side="top" {...composerFloatingLayerProps}>
+        <MenuGroup>
+          <MenuGroupLabel>Run on</MenuGroupLabel>
+          <RunOnMenuItems
+            environments={availableEnvironments}
+            environmentId={environmentId}
+            envLocked={envLocked}
+            autoEnvironmentLabel={autoEnvironmentLabel}
+            onAutoEnvironment={onAutoEnvironment}
+            onEnvironmentChange={onEnvironmentChange}
+            subPopupProps={composerFloatingLayerProps}
+          />
+          {onAddToMachine ? (
+            <MenuItem onClick={onAddToMachine}>
+              <span className={ADD_TO_MACHINE_LABEL_CLASS}>
+                <PlusIcon aria-hidden="true" className="size-3" />
+                Add to another machine
               </span>
-            </SelectItem>
-          )}
-          {listedEnvironments.map((env) => renderEnvironmentItem(env))}
-        </SelectGroup>
-        {newBoatVms.length > 0 ? (
-          <SelectGroup>
-            <SelectGroupLabel>New boat VM</SelectGroupLabel>
-            {newBoatVms.map((env) => renderEnvironmentItem(env, true))}
-          </SelectGroup>
-        ) : null}
-        {onAddToMachine ? (
-          <SelectItem value={ADD_MACHINE_VALUE}>
-            <span className={ADD_TO_MACHINE_LABEL_CLASS}>
-              <PlusIcon aria-hidden="true" className="size-3" />
-              Add to another machine
-            </span>
-          </SelectItem>
-        ) : null}
-      </SelectPopup>
-    </Select>
+            </MenuItem>
+          ) : null}
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
   );
 });
