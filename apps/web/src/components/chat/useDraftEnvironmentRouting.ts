@@ -208,6 +208,24 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     readonly scope: string;
   } | null>(null);
   const isEnvironmentChanging = busyEnvironmentChange?.scope === environmentChangeScope;
+  // A send pressed while the machine is still being prepared waits for it. Keyed by the
+  // draft, which keeps its id when it moves to the new machine's project.
+  const [queuedSend, setQueuedSend] = useState<{
+    readonly draftId: string;
+    readonly ready: boolean;
+  } | null>(null);
+  const queuedSendState =
+    queuedSend === null || queuedSend.draftId !== draftId
+      ? null
+      : queuedSend.ready && !isEnvironmentChanging
+        ? "ready"
+        : "waiting";
+  const queueSendAfterEnvironmentChange = () => {
+    if (!isEnvironmentChanging || !draftId) return false;
+    setQueuedSend({ draftId, ready: false });
+    return true;
+  };
+  const clearQueuedSend = () => setQueuedSend(null);
 
   const onEnvironmentChange = (nextEnvironmentId: EnvironmentId) => {
     if (envLocked || !draftId || sendInFlightRef.current) return;
@@ -221,7 +239,13 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     const finish = () => {
       if (environmentChangeRef.current === request) environmentChangeRef.current = null;
       setBusyEnvironmentChange((busy) => (busy === request ? null : busy));
+      // Only a draft that reached the new machine sends what waited on it.
+      setQueuedSend((queued) => (queued?.draftId === draftId && !queued.ready ? null : queued));
     };
+    const markQueuedSendReady = () =>
+      setQueuedSend((queued) =>
+        queued?.draftId === draftId ? { ...queued, ready: true } : queued,
+      );
     if (target.boatVm !== undefined) {
       if (boatVmHostId === null || boatVmDraft === null) return;
       setBusyEnvironmentChange(request);
@@ -253,6 +277,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
             currentDraft.projectId !== originalDraft.projectId
           )
             return;
+          markQueuedSendReady();
           // A "No project" draft moves to the VM's Scratch project the way it
           // moves to any other machine's.
           if (boatVmDraft === "scratch") {
@@ -285,6 +310,7 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
         currentDraft.projectId !== originalDraft.projectId
       )
         return;
+      markQueuedSendReady();
       const projectRef = scopeProjectRef(target.environmentId, project.id);
       if (activeProjectIsScratch) {
         setLogicalProjectDraftThreadId(
@@ -324,8 +350,10 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
     loadBalancing,
     onAutoEnvironmentStable,
     autoEnvironmentLabel,
-    isEnvironmentChanging,
     readPendingEnvironmentChange,
     onEnvironmentChangeStable,
+    queuedSendState,
+    queueSendAfterEnvironmentChange,
+    clearQueuedSend,
   };
 }

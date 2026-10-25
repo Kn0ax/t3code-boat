@@ -1891,9 +1891,11 @@ export default function ChatView(props: ChatViewProps) {
     loadBalancing,
     onAutoEnvironmentStable,
     autoEnvironmentLabel,
-    isEnvironmentChanging,
     readPendingEnvironmentChange,
     onEnvironmentChangeStable,
+    queuedSendState,
+    queueSendAfterEnvironmentChange,
+    clearQueuedSend,
   } = useDraftEnvironmentRouting({
     draftId,
     draftThread,
@@ -3095,6 +3097,7 @@ export default function ChatView(props: ChatViewProps) {
   const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   // A copy whose boat VM was deleted continues on a new VM; only the text goes along.
   const onComposerSend: typeof onSend = (...args) => {
+    if (queueSendAfterEnvironmentChange()) return Promise.resolve();
     const continueOnNewVm = boatVmCopy.continueOnNewVm;
     if (continueOnNewVm === null) return onSend(...args);
     const target = composerDraftTarget;
@@ -3104,6 +3107,11 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onComposerSendStable = useStableCallback(onComposerSend);
+  useEffect(() => {
+    if (queuedSendState !== "ready") return;
+    clearQueuedSend();
+    void onComposerSendStable();
+  }, [queuedSendState, clearQueuedSend, onComposerSendStable]);
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -3678,8 +3686,8 @@ export default function ChatView(props: ChatViewProps) {
                               sendDisabledReason={
                                 !canOperateThread
                                   ? "This connection cannot change threads."
-                                  : isEnvironmentChanging
-                                    ? "Preparing machine"
+                                  : queuedSendState === "waiting"
+                                    ? "Sends when the machine is ready"
                                     : isRevertingCheckpoint
                                       ? "Rewinding conversation"
                                       : feedbackUploading
