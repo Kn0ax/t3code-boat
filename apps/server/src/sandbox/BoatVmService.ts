@@ -210,7 +210,9 @@ while [ "$ATTEMPT" -lt 60 ]; do
       try {
         const status = JSON.parse(input);
         const name = String(status.Self?.DNSName ?? "").replace(/\\.$/, "");
-        if (status.BackendState !== "Running" || name.length > 253 ||
+        // A resumed VM reports Running and its old name from saved state, even when
+        // control removed its node; only control marks it Online.
+        if (status.BackendState !== "Running" || status.Self?.Online !== true || name.length > 253 ||
           !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(name)) {
           process.exitCode = 1;
           return;
@@ -228,11 +230,13 @@ while [ "$ATTEMPT" -lt 60 ]; do
     exit 0
   fi
   ATTEMPT=$((ATTEMPT + 1))
-  # A saved key rescues a VM the snapshot cannot log in, such as one first joined
-  # with that key whose node has since expired.
-  if [ -n "$TS_AUTHKEY" ] && [ "$ATTEMPT" -ge 15 ] && sudo tailscale status --json 2>/dev/null |
-    node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{process.exitCode=JSON.parse(s).BackendState==="NeedsLogin"?0:1})'; then
-    sudo tailscale up --reset --auth-key="$TS_AUTHKEY" >/dev/null
+  # A saved key rescues a VM the snapshot cannot log in, such as one whose
+  # ephemeral node was removed while it was stopped. The boot service gets the
+  # first 90 seconds so the two never log in at once, and the rescue keeps the
+  # name it gave the node, which --reset would otherwise drop.
+  if [ -n "$TS_AUTHKEY" ] && [ "$ATTEMPT" -ge 45 ]; then
+    TS_HOSTNAME="$(sudo tailscale status --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).Self?.HostName??""))}catch{}})' || true)"
+    sudo tailscale up --reset --auth-key="$TS_AUTHKEY" \${TS_HOSTNAME:+--hostname="$TS_HOSTNAME"} >/dev/null
     TS_AUTHKEY=""
   fi
   sleep 2

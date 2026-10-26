@@ -1512,8 +1512,8 @@ fi
       const vm = shell([
         { BackendState: "Starting", Self: { DNSName: "existing.tail.ts.net." } },
         { BackendState: "Running", Self: {} },
-        { BackendState: "Running", Self: { DNSName: "invalid/name" } },
-        { BackendState: "Running", Self: { DNSName: "existing.tail.ts.net." } },
+        { BackendState: "Running", Self: { DNSName: "invalid/name", Online: true } },
+        { BackendState: "Running", Self: { DNSName: "existing.tail.ts.net.", Online: true } },
       ]);
       const provider = BoatVmService.withTailnet(
         {
@@ -1538,6 +1538,30 @@ fi
           { providerId: "boat", sandboxId: "clone" },
           3773,
         );
+  it("logs in a resumed snapshot VM that reports Running from saved state but is offline", () => {
+    // A resumed VM whose ephemeral node was removed keeps its old name and Running state.
+    const stale = {
+      BackendState: "Running",
+      Self: { DNSName: "old.tail.ts.net.", HostName: "sfvm-old", Online: false },
+    };
+    const vm = shell([
+      ...Array.from({ length: 46 }, () => stale),
+      { BackendState: "Running", Self: { DNSName: "rescued.tail.ts.net.", Online: true } },
+    ]);
+    NodeFS.mkdirSync(NodePath.join(vm.home, ".t3"));
+    NodeFS.writeFileSync(NodePath.join(vm.home, ".t3", "tailscale-authkey"), "saved-key");
+
+    const result = vm.run(BoatVmService.SNAPSHOT_TAILNET_SCRIPT, ["http"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "rescued.tail.ts.net");
+    assert.equal(
+      vm.commands(),
+      "status --json\n".repeat(46) +
+        "up --reset --auth-key=saved-key --hostname=sfvm-old\nstatus --json\nserve --bg --http=80 http://127.0.0.1:3773\n",
+    );
+  });
+
 
         assert.equal(exposed.httpBaseUrl, "https://existing.tail.ts.net");
         assert.equal(
@@ -1560,7 +1584,9 @@ fi
   });
 
   it.effect("exposes snapshot HTTP without requesting a TLS certificate", () => {
-    const vm = shell([{ BackendState: "Running", Self: { DNSName: "existing.tail.ts.net." } }]);
+    const vm = shell([
+      { BackendState: "Running", Self: { DNSName: "existing.tail.ts.net.", Online: true } },
+    ]);
     const provider = BoatVmService.withTailnet(
       {
         ...makeFakeSandboxProvider({ id: "boat" }),
@@ -1585,8 +1611,8 @@ fi
   it("logs a snapshot VM in with the saved key only after it stays logged out", () => {
     const needsLogin = { BackendState: "NeedsLogin", Self: {} };
     const vm = shell([
-      ...Array.from({ length: 16 }, () => needsLogin),
-      { BackendState: "Running", Self: { DNSName: "rescued.tail.ts.net." } },
+      ...Array.from({ length: 46 }, () => needsLogin),
+      { BackendState: "Running", Self: { DNSName: "rescued.tail.ts.net.", Online: true } },
     ]);
     NodeFS.mkdirSync(NodePath.join(vm.home, ".t3"));
     NodeFS.writeFileSync(NodePath.join(vm.home, ".t3", "tailscale-authkey"), "saved-key");
@@ -1597,7 +1623,7 @@ fi
     assert.equal(result.stdout, "rescued.tail.ts.net");
     assert.equal(
       vm.commands(),
-      "status --json\n".repeat(16) +
+      "status --json\n".repeat(46) +
         "up --reset --auth-key=saved-key\nstatus --json\nserve --bg --http=80 http://127.0.0.1:3773\n",
     );
     assert.isFalse(NodeFS.existsSync(NodePath.join(vm.home, ".t3", "tailscale-authkey")));
