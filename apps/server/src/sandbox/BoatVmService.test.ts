@@ -432,6 +432,43 @@ describe("BoatVmService", () => {
       }),
   );
 
+  it.effect("starts the repository sync while T3 installs, not after", () =>
+    Effect.gen(function* () {
+      const syncStarted = yield* Deferred.make<void>();
+      const install = "# t3-sandbox-script: install\ntrue";
+      const { layer } = makeHarness({
+        provider: (provider) => ({
+          ...provider,
+          // The install finishes only once the sync has begun.
+          exec: (ref, command) =>
+            command.script === BoatVmService.SYNC_SCRIPT
+              ? Deferred.succeed(syncStarted, undefined).pipe(
+                  Effect.andThen(provider.exec(ref, command)),
+                )
+              : command.script === install
+                ? Deferred.await(syncStarted).pipe(Effect.andThen(provider.exec(ref, command)))
+                : provider.exec(ref, command),
+        }),
+        manager: (manager) => ({
+          ...manager,
+          provision: ({ provider }) =>
+            Effect.gen(function* () {
+              const ref: SandboxRef = { providerId: "boat", sandboxId: "new" };
+              yield* provider.exec(ref, { script: install, timeoutMs: 1_000 });
+              return bootstrapFor(ref, "pair-new");
+            }),
+        }),
+      });
+      const vm = yield* Effect.gen(function* () {
+        return yield* (yield* BoatVmService.BoatVmService).launch({ repository: repository() });
+      }).pipe(Effect.provide(layer));
+      assert.equal(
+        git(vm.workspaceRoot, ["rev-parse", "HEAD"]),
+        git(remote, ["rev-parse", "HEAD"]),
+      );
+    }),
+  );
+
   it.effect("cancels the repository sync if bootstrap fails", () =>
     Effect.gen(function* () {
       const syncStarted = yield* Deferred.make<void>();
@@ -1226,110 +1263,6 @@ describe("BoatVmService", () => {
       ]);
     }).pipe(Effect.provide(layer));
   });
-
-  /**
-   * A stand-in for a VM's T3 server that runs `children` (shell lines) and
-   * records its pid where the busy check reads it. Ready once they have started.
-   */
-  const fakeServer = (sandboxId: string, children = "") =>
-    Effect.acquireRelease(
-      Effect.promise(
-        () =>
-          new Promise<NodeChildProcess.ChildProcess>((resolve) => {
-            const server = NodeChildProcess.spawn("sh", ["-c", `${children}\necho ready\nwait`], {
-              detached: true,
-              stdio: ["ignore", "pipe", "ignore"],
-            });
-            server.stdout!.once("data", () => resolve(server));
-          }),
-      ).pipe(
-        Effect.tap((server) =>
-          Effect.sync(() => {
-            const state = NodePath.join(homeOf(sandboxId), ".t3", "ssh-launch", "sandbox");
-            NodeFS.mkdirSync(state, { recursive: true });
-            NodeFS.writeFileSync(NodePath.join(state, "pid"), `${server.pid}\n`);
-          }),
-        ),
-      ),
-      (server) => Effect.sync(() => process.kill(-server.pid!, "SIGKILL")),
-    );
-
-  it.effect.skipIf(!NodeFS.existsSync("/proc/self/stat"))(
-    "keeps only running VMs that had work alive",
-    () => {
-      const vm = (sandboxId: string, status: SandboxInfo["status"], label = `vm ${sandboxId}`) => ({
-        ref: { providerId: "boat" as const, sandboxId },
-        status,
-        label,
-      });
-      const { record, layer } = makeHarness({
-        vms: [
-          vm("busy", "running"),
-          vm("quiet", "running"),
-          vm("archived", "stopped"),
-          vm("job-node", "running", "sandbox job 1"),
-          vm("deleted", "destroyed", "old sandbox"),
-        ],
-      });
-      return Effect.gen(function* () {
-        yield* fakeServer("busy", "sleep 60 &");
-        yield* fakeServer("job-node", "sleep 60 &");
-        yield* fakeServer("quiet");
-        const vms = yield* BoatVmService.BoatVmService;
-
-        yield* vms.keepAlive;
-        const listed = yield* vms.list;
-
-        assert.deepEqual(record.extended, [{ sandboxId: "busy", minutes: 30 }]);
-        assert.deepEqual(listed.sandboxIds, ["busy", "quiet", "archived", "job-node"]);
-        assert.deepEqual(
-          listed.vms.map((entry) => entry.label),
-          ["busy", "quiet", "archived"],
-        );
-      }).pipe(Effect.scoped, Effect.provide(layer));
-    },
-  );
-
-  it.effect.skipIf(!NodeFS.existsSync("/proc/self/exe"))(
-    "counts what the server runs as work, not its resource monitor or fresh state writes",
-    () => {
-      const running = (sandboxId: string) => ({
-        ref: { providerId: "boat" as const, sandboxId },
-        status: "running" as const,
-        label: `vm ${sandboxId}`,
-      });
-      const { record, layer } = makeHarness({
-        vms: [running("working"), running("monitored"), running("written")],
-      });
-      // The resource monitor runs for the server's whole life; a copy of sleep stands in for it.
-      const monitor = NodePath.join(NodeFS.realpathSync(scratch), "t3-resource-monitor");
-      NodeFS.copyFileSync(
-        NodeChildProcess.execFileSync("sh", ["-c", "command -v sleep"], {
-          encoding: "utf8",
-        }).trim(),
-        monitor,
-      );
-      const userdata = NodePath.join(homeOf("written"), ".t3", "userdata");
-      NodeFS.mkdirSync(userdata, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(userdata, "statev2.sqlite-wal"), "");
-      return Effect.gen(function* () {
-        yield* fakeServer("working", "sleep 60 &");
-        // Ready only once the fork has become the monitor, so it is not counted as the shell.
-        yield* fakeServer(
-          "monitored",
-          `"${monitor}" 60 &\nwhile [ "$(readlink /proc/$!/exe)" != "${monitor}" ]; do :; done`,
-        );
-        yield* fakeServer("written");
-
-        yield* (yield* BoatVmService.BoatVmService).keepAlive;
-
-        assert.deepEqual(
-          record.extended.map((entry) => entry.sandboxId),
-          ["working"],
-        );
-      }).pipe(Effect.scoped, Effect.provide(layer));
-    },
-  );
 });
 
 describe("boat VM bring home", () => {
@@ -1538,30 +1471,6 @@ fi
           { providerId: "boat", sandboxId: "clone" },
           3773,
         );
-  it("logs in a resumed snapshot VM that reports Running from saved state but is offline", () => {
-    // A resumed VM whose ephemeral node was removed keeps its old name and Running state.
-    const stale = {
-      BackendState: "Running",
-      Self: { DNSName: "old.tail.ts.net.", HostName: "sfvm-old", Online: false },
-    };
-    const vm = shell([
-      ...Array.from({ length: 46 }, () => stale),
-      { BackendState: "Running", Self: { DNSName: "rescued.tail.ts.net.", Online: true } },
-    ]);
-    NodeFS.mkdirSync(NodePath.join(vm.home, ".t3"));
-    NodeFS.writeFileSync(NodePath.join(vm.home, ".t3", "tailscale-authkey"), "saved-key");
-
-    const result = vm.run(BoatVmService.SNAPSHOT_TAILNET_SCRIPT, ["http"]);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "rescued.tail.ts.net");
-    assert.equal(
-      vm.commands(),
-      "status --json\n".repeat(46) +
-        "up --reset --auth-key=saved-key --hostname=sfvm-old\nstatus --json\nserve --bg --http=80 http://127.0.0.1:3773\n",
-    );
-  });
-
 
         assert.equal(exposed.httpBaseUrl, "https://existing.tail.ts.net");
         assert.equal(
@@ -1627,6 +1536,30 @@ fi
         "up --reset --auth-key=saved-key\nstatus --json\nserve --bg --http=80 http://127.0.0.1:3773\n",
     );
     assert.isFalse(NodeFS.existsSync(NodePath.join(vm.home, ".t3", "tailscale-authkey")));
+  });
+
+  it("logs in a resumed snapshot VM that reports Running from saved state but is offline", () => {
+    // A resumed VM whose ephemeral node was removed keeps its old name and Running state.
+    const stale = {
+      BackendState: "Running",
+      Self: { DNSName: "old.tail.ts.net.", HostName: "sfvm-old", Online: false },
+    };
+    const vm = shell([
+      ...Array.from({ length: 46 }, () => stale),
+      { BackendState: "Running", Self: { DNSName: "rescued.tail.ts.net.", Online: true } },
+    ]);
+    NodeFS.mkdirSync(NodePath.join(vm.home, ".t3"));
+    NodeFS.writeFileSync(NodePath.join(vm.home, ".t3", "tailscale-authkey"), "saved-key");
+
+    const result = vm.run(BoatVmService.SNAPSHOT_TAILNET_SCRIPT, ["http"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "rescued.tail.ts.net");
+    assert.equal(
+      vm.commands(),
+      "status --json\n".repeat(46) +
+        "up --reset --auth-key=saved-key --hostname=sfvm-old\nstatus --json\nserve --bg --http=80 http://127.0.0.1:3773\n",
+    );
   });
 
   it("joins with an auth key and serves plain HTTP when requested", () => {
@@ -1748,8 +1681,13 @@ const vmThread = (
   ...fields,
 });
 
-/** A thread snapshot as a VM's T3 answers it, with no history. */
-const snapshotOf = (id: string, projectId: string, archivedAt: string | null) =>
+/** A thread snapshot as a VM's T3 answers it, with only `messages` of its history. */
+const snapshotOf = (
+  id: string,
+  projectId: string,
+  archivedAt: string | null,
+  messages: ReadonlyArray<unknown> = [],
+) =>
   JSON.stringify({
     snapshotSequence: 1,
     projection: {
@@ -1784,7 +1722,7 @@ const snapshotOf = (id: string, projectId: string, archivedAt: string | null) =>
       providerThreads: [],
       providerTurns: [],
       runtimeRequests: [],
-      messages: [],
+      messages,
       plans: [],
       turnItems: [],
       checkpointScopes: [],
@@ -1829,6 +1767,10 @@ const makeLifecycleHarness = (
     readonly execs?: Array<string>;
     /** Threads whose snapshot was fetched. */
     readonly fetched?: Array<string>;
+    /** The messages of every thread's snapshot. */
+    readonly messages?: ReadonlyArray<unknown>;
+    /** Other files on the VMs, by path; a snapshot's T3 home is ".". */
+    readonly vmFiles?: Map<string, Uint8Array>;
   },
 ) => {
   // An archived thread keeps the project it was listed in.
@@ -1877,11 +1819,6 @@ const makeLifecycleHarness = (
           });
           return Effect.succeed({ exitCode: 0, stdout, stderr: "" });
         }
-        if (command.script === BoatVmService.BUSY_SCRIPT) {
-          // A running thread's agent runs under the VM's server.
-          const busy = vm?.threads.some((thread) => thread.status === "running") ?? false;
-          return Effect.succeed({ exitCode: busy ? 0 : 1, stdout: "", stderr: "" });
-        }
         if (command.script === BoatVmLifecycle.THREAD_SNAPSHOT_SCRIPT) {
           const threadId = command.args?.[0] ?? "";
           input.fetched?.push(threadId);
@@ -1894,13 +1831,15 @@ const makeLifecycleHarness = (
         return provider.exec(ref, command);
       },
       readFile: (ref, path) => {
+        const file = input.vmFiles?.get(path);
+        if (file !== undefined) return Effect.succeed(file);
         if (!path.startsWith("snapshot:")) return provider.readFile(ref, path);
         const threadId = path.slice("snapshot:".length);
         const archived = input.contents.get(ref.sandboxId)?.archived.includes(threadId) ?? false;
         const projectId = projectOf.get(threadId) ?? "vm-project";
         return Effect.succeed(
           new TextEncoder().encode(
-            snapshotOf(threadId, projectId, archived ? minutesAgo(1) : null),
+            snapshotOf(threadId, projectId, archived ? minutesAgo(1) : null, input.messages),
           ),
         );
       },
@@ -2142,6 +2081,53 @@ describe("boat VM lifecycle", () => {
     });
   });
 
+  it.effect("brings a mirrored thread's attachment files here", () => {
+    const baseDir = NodePath.join(scratch, "t3-home");
+    const image = {
+      type: "image",
+      id: "t1-00000000-0000-4000-8000-000000000001",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const contents = new Map<string, VmContents>([
+      ["vm1", { threads: [vmThread("t1")], archived: [] }],
+    ]);
+    const { layer } = makeLifecycleHarness({
+      contents,
+      vms: [running("vm1")],
+      baseDir,
+      messages: [
+        {
+          id: "m1",
+          threadId: "t1",
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text: "fix this",
+          attachments: [image],
+          streaming: false,
+          createdBy: "user",
+          creationSource: "web",
+          createdAt: minutesAgo(5),
+          updatedAt: minutesAgo(5),
+        },
+      ],
+      vmFiles: new Map([[`userdata/attachments/${image.id}.png`, bytes]]),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass.pipe(Effect.provide(layer));
+      assert.deepEqual(
+        new Uint8Array(
+          NodeFS.readFileSync(NodePath.join(baseDir, "userdata", "attachments", `${image.id}.png`)),
+        ),
+        bytes,
+      );
+    });
+  });
+
   it.effect("syncs before stopping a quiet VM, and stops it even when the sync fails", () => {
     const contents = new Map<string, VmContents>([
       ["snoozed", { threads: [vmThread("t1", { snoozedUntil: minutesAgo(-60) })], archived: [] }],
@@ -2181,6 +2167,36 @@ describe("boat VM lifecycle", () => {
         ["working"],
       );
       assert.deepEqual(record.destroyed, []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("moves a VM's deadline only while a thread on it shows as working", () => {
+    const contents = new Map<string, VmContents>([
+      ["working", { threads: [vmThread("t1", { status: "running" })], archived: [] }],
+      ["answering", { threads: [vmThread("t2", { status: "waiting" })], archived: [] }],
+      [
+        "subagent",
+        {
+          threads: [vmThread("t3"), vmThread("t4", { status: "running", parentThreadId: "t3" })],
+          archived: [],
+        },
+      ],
+      // Idle threads inside the idle window, and a VM with no thread yet.
+      ["idle", { threads: [vmThread("t5")], archived: [] }],
+      ["fresh", { threads: [], archived: [] }],
+    ]);
+    const { record, layer } = makeLifecycleHarness({
+      contents,
+      vms: [...contents.keys()].map((sandboxId) => running(sandboxId)),
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(nowMs);
+      yield* pass;
+      assert.sameMembers(
+        record.extended.map((entry) => entry.sandboxId),
+        ["working", "answering", "subagent"],
+      );
+      assert.deepEqual(record.stopped, []);
     }).pipe(Effect.provide(layer));
   });
 

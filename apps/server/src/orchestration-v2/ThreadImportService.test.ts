@@ -412,6 +412,69 @@ it.effect("mirrors a thread: creates the copy, then adds only what is new", () =
   }),
 );
 
+it.effect("keeps a mirrored message's attachments, adding them to a copy made without", () =>
+  Effect.gen(function* () {
+    const runtime = ProviderReplayHarness.layerWithRegistry(
+      { name: "thread-mirror-attachments" },
+      ProviderAdapterRegistry.layerFromAdapters([]),
+      { runEffectWorker: false },
+    );
+    const services = yield* Layer.build(
+      Layer.mergeAll(
+        runtime,
+        ThreadImportService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              runtime,
+              Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed([]) }),
+            ),
+          ),
+        ),
+      ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+    );
+    const orchestrator = Context.get(services, Orchestrator.OrchestratorV2);
+    const importer = Context.get(services, ThreadImportService.ThreadImportService);
+    const image = {
+      type: "image" as const,
+      id: "vm-thread-00000000-0000-4000-8000-000000000001",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+    const userItem = vmItems[0]!;
+    const snapshotWith = (sequence: number, attachments: ReadonlyArray<typeof image>) => ({
+      snapshotSequence: sequence,
+      projection: {
+        ...({} as OrchestrationV2ThreadProjection),
+        thread: { ...vmThread, archivedAt: null, settledOverride: null, settledAt: null },
+        messages: [{ ...vmMessages[0]!, attachments }],
+        visibleTurnItems: [
+          {
+            visibility: "local" as const,
+            sourceThreadId: vmThread.id,
+            sourceItemId: userItem.id,
+            position: 0,
+            item: { ...userItem, attachments },
+          },
+        ],
+      },
+    });
+    const mirror = (snapshot: ReturnType<typeof snapshotWith>) =>
+      importer.mirrorThread({
+        originKey: "boat-vm:bx_1:vm-thread",
+        projectId: homeProjectId,
+        snapshot,
+      });
+
+    // A copy made before mirrors kept attachments.
+    const { threadId } = yield* mirror(snapshotWith(3, []));
+    expect((yield* mirror(snapshotWith(4, [image]))).outcome).toBe("updated");
+
+    const copy = yield* orchestrator.getThreadSnapshot(threadId);
+    expect(copy.projection.messages.map((message) => message.attachments)).toEqual([[image]]);
+  }),
+);
+
 it.effect("deletes a mirrored copy and never brings it back", () =>
   Effect.gen(function* () {
     const runtime = ProviderReplayHarness.layerWithRegistry(

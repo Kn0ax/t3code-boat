@@ -2,7 +2,8 @@
  * Read-only copies of threads from another environment, such as a boat VM
  * that is about to be deleted. A thread belongs to one environment, so the
  * copy is a new thread here that keeps the conversation and tool activity;
- * runs, checkpoints and attachments stay behind with the other workspace.
+ * runs and checkpoints stay behind with the other workspace. Attachments do
+ * too, except on a mirror, whose files the caller brings here.
  * Like imported agent sessions, the copy is a `v1_import` thread whose items
  * carry no run, so a later message continues it through a context handoff.
  *
@@ -60,6 +61,7 @@ function importedThreadEvents(input: {
   readonly snapshot: OrchestrationV2ThreadImportInput["snapshot"];
   /** Set when updating a copy, since event ids must stay unique across updates. */
   readonly revision?: number;
+  readonly keepAttachments: boolean;
 }): ReadonlyArray<OrchestrationV2DomainEvent> {
   const { threadId, projectId } = input;
   const source = input.snapshot.projection;
@@ -120,7 +122,7 @@ function importedThreadEvents(input: {
           threadId,
           runId: null,
           nodeId: null,
-          attachments: [],
+          attachments: input.keepAttachments ? message.attachments : [],
         };
         events.push({
           id: EventId.make(`${prefix}:message:${message.id}`),
@@ -135,7 +137,12 @@ function importedThreadEvents(input: {
         type: "turn-item.updated",
         threadId,
         occurredAt: item.updatedAt,
-        payload: { ...item, ...base, messageId: messageId(item.messageId), attachments: [] },
+        payload: {
+          ...item,
+          ...base,
+          messageId: messageId(item.messageId),
+          attachments: input.keepAttachments ? (item.attachments ?? []) : [],
+        },
       });
       return;
     }
@@ -169,12 +176,15 @@ function mirrorUpdateEvents(input: {
     projectId: home.thread.projectId,
     snapshot,
     revision: snapshot.snapshotSequence,
+    keepAttachments: true,
   }).filter((event) => {
     if (event.type === "message.updated") {
       const current = messages.get(event.payload.id);
+      // Attachments count too, for copies made before mirrors kept them.
       return (
         current === undefined ||
         current.text !== event.payload.text ||
+        current.attachments.length !== event.payload.attachments.length ||
         !sameTime(current.updatedAt, event.payload.updatedAt)
       );
     }
@@ -235,6 +245,7 @@ export class ThreadImportService extends Context.Service<
     /**
      * Creates the copy of `originKey` in `projectId`, or brings an existing copy
      * up to `snapshot`. A copy someone deleted, or continued here, is left alone.
+     * It keeps the messages' attachments, whose files the caller brings here.
      */
     readonly mirrorThread: (input: {
       readonly originKey: string;
@@ -314,7 +325,12 @@ const make = Effect.gen(function* () {
       return { threadId, projectId: existing.value.thread.projectId, created: false };
     }
     yield* eventSink.write({
-      events: importedThreadEvents({ threadId, projectId, snapshot: input.snapshot }),
+      events: importedThreadEvents({
+        threadId,
+        projectId,
+        snapshot: input.snapshot,
+        keepAttachments: false,
+      }),
     });
     return { threadId, projectId, created: true };
   });
@@ -338,6 +354,7 @@ const make = Effect.gen(function* () {
           threadId,
           projectId: input.projectId,
           snapshot: input.snapshot,
+          keepAttachments: true,
         }),
       });
       return { threadId, outcome: "created" as const };

@@ -5,8 +5,8 @@
  * client on the tailnet pairs with it like any other remote environment.
  *
  * boat's auto-stop is a deadline, not idle time, so a VM is created with the
- * idle window as its deadline and this server pushes the deadline out while
- * the VM has work. With nothing to do, or this server gone, boat archives it;
+ * idle window as its deadline and this server pushes the deadline out while a
+ * thread on it is working. Otherwise, or with this server gone, boat archives it;
  * picking it again resumes it from its saved disk.
  *
  * @module BoatVmService
@@ -316,23 +316,6 @@ const SYNC_WARNINGS: Readonly<Record<string, (name: string) => string>> = {
   diverged: (name) =>
     `${name} on the VM could not fast-forward to the remote branch, so it was not updated.`,
 };
-
-// Exits 0 while the server runs something: an agent, a terminal, a dev
-// server. An idle agent session ends after the server's own idle timeout, so
-// a finished turn stops counting. The resource monitor runs for the server's
-// whole life, and a connected client or a database write is no work, so none
-// of them keeps a VM up. The server's pid is the one the serve step recorded,
-// and a /proc stat line gives the state and the parent pid after the name.
-export const BUSY_SCRIPT = `SERVER="$(cat "$HOME/.t3/ssh-launch/${SANDBOX_STATE_KEY}/pid" 2>/dev/null || true)"
-case "$SERVER" in ''|*[!0-9]*) exit 1 ;; esac
-for DIR in /proc/[0-9]*; do
-  STAT="$(sed -n 's/.*) \\([A-Za-z]\\) \\([0-9]*\\) .*/\\1 \\2/p' "$DIR/stat" 2>/dev/null)"
-  [ "\${STAT#* }" = "$SERVER" ] || continue
-  [ "\${STAT% *}" != Z ] || continue
-  case "$(readlink "$DIR/exe" 2>/dev/null)" in */t3-resource-monitor) continue ;; esac
-  exit 0
-done
-exit 1`;
 
 // Each checkout under ~/work and its origin, one `<directory>\t<url>` line apiece.
 const CHECKOUTS_SCRIPT = `for dir in "$HOME"/work/*/; do
@@ -951,6 +934,7 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
   const threadImport = yield* ThreadImportService.ThreadImportService;
   const lifecycle = yield* BoatVmLifecycle.make({
     statePath: path.join((yield* ServerConfig.ServerConfig).stateDir, "boat-vm-threads.json"),
+    attachmentsDir: (yield* ServerConfig.ServerConfig).attachmentsDir,
     manager,
     threadImport,
     followedCopies: yield* FollowedThreadCopies.FollowedThreadCopies,
@@ -1444,20 +1428,21 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
           exec: (ref, command) => {
             const kind = sandboxScriptKind(command.script);
             const stage = kind === "install" ? "installing" : kind === "launch" ? "starting" : null;
-            return (stage === null ? Effect.void : report({ stage })).pipe(
+            // The sync needs only git, so it runs alongside installing and starting T3.
+            const startSync =
+              syncFiber === undefined && (kind === "install" || kind === "launch")
+                ? syncRepository(ref).pipe(
+                    Effect.forkIn(launchScope),
+                    Effect.tap((fiber) =>
+                      Effect.sync(() => {
+                        syncFiber = fiber;
+                      }),
+                    ),
+                  )
+                : Effect.void;
+            return startSync.pipe(
+              Effect.andThen(stage === null ? Effect.void : report({ stage })),
               Effect.andThen(baseProvider.exec(ref, command)),
-              Effect.tap((result) =>
-                result.exitCode === 0 && syncFiber === undefined && kind === "install"
-                  ? syncRepository(ref).pipe(
-                      Effect.forkIn(launchScope),
-                      Effect.tap((fiber) =>
-                        Effect.sync(() => {
-                          syncFiber = fiber;
-                        }),
-                      ),
-                    )
-                  : Effect.void,
-              ),
             );
           },
           exposePort: (ref, port) =>
@@ -1987,22 +1972,13 @@ export const make = Effect.fn("BoatVmService.make")(function* (options: BoatVmSe
         running,
         (vm) =>
           lifecycle.apply(provider, vm.ref, settings.boatVmIdleMinutes).pipe(
-            // A VM the lifecycle stopped or deleted must not get a new deadline.
+            // Only a thread shown as working moves the deadline. An open client, a
+            // terminal or an idle agent session does not, so boat stops the VM once
+            // the idle window passes with nothing working.
             Effect.flatMap((outcome) =>
-              outcome !== "kept" || extend === undefined
+              outcome !== "working" || extend === undefined
                 ? Effect.void
-                : provider
-                    .exec(vm.ref, {
-                      script: BUSY_SCRIPT,
-                      timeoutMs: 60_000,
-                    })
-                    .pipe(
-                      Effect.flatMap((result) =>
-                        result.exitCode === 0
-                          ? extend(vm.ref, settings.boatVmIdleMinutes)
-                          : Effect.void,
-                      ),
-                    ),
+                : extend(vm.ref, settings.boatVmIdleMinutes),
             ),
             Effect.catch((error) =>
               Effect.logWarning("boat.vm.keepAlive.failed", {

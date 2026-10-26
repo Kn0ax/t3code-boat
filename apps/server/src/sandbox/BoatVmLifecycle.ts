@@ -60,6 +60,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { attachmentRelativePath, resolveAttachmentPath } from "../attachmentStore.ts";
 import type * as FollowedThreadCopies from "../orchestration-v2/FollowedThreadCopies.ts";
 import type * as ThreadImportService from "../orchestration-v2/ThreadImportService.ts";
 
@@ -288,7 +289,8 @@ function decide(input: {
   return open.every(resting) ? "stop" : "none";
 }
 
-type LifecycleOutcome = "stopped" | "deleted" | "kept";
+/** "working": kept because a thread on it shows as working or connecting, the only reason a VM's deadline moves. */
+type LifecycleOutcome = "stopped" | "deleted" | "kept" | "working";
 
 class LifecycleProblem extends Schema.TaggedError<LifecycleProblem>()("LifecycleProblem", {
   message: Schema.String,
@@ -297,6 +299,8 @@ const problem = (message: string) => new LifecycleProblem({ message });
 
 export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
   readonly statePath: string;
+  /** Where the copies' attachment files go: this server's attachments directory. */
+  readonly attachmentsDir: string;
   readonly manager: SandboxEnvironmentManager["Service"];
   readonly threadImport: ThreadImportService.ThreadImportService["Service"];
   readonly followedCopies: FollowedThreadCopies.FollowedThreadCopies["Service"];
@@ -387,7 +391,10 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       ),
     );
 
-  /** The thread's snapshot, or undefined once it no longer exists. */
+  /**
+   * The thread's snapshot and the VM's attachments directory, or undefined
+   * once the thread no longer exists.
+   */
   const readSnapshot = Effect.fn("BoatVmLifecycle.readSnapshot")(function* (
     provider: SandboxProviderShape,
     ref: SandboxRef,
@@ -400,9 +407,43 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       Effect.mapError((error) => problem(error.message)),
       Effect.ensuring(exec(provider, ref, REMOVE_SNAPSHOT_SCRIPT).pipe(Effect.ignore)),
     );
-    return yield* decodeSnapshot(text).pipe(
+    const snapshot = yield* decodeSnapshot(text).pipe(
       Effect.mapError(() => problem(`thread ${threadId} snapshot is unreadable`)),
     );
+    // The snapshot file sits in the VM's T3 home, whose userdata holds the attachments.
+    return { snapshot, attachmentsDir: path.join(path.dirname(answer), "userdata", "attachments") };
+  });
+
+  /**
+   * Copies the snapshot's attachment files that are not here yet. One that
+   * cannot be read is left for the next mirror of the thread.
+   */
+  const bringAttachments = Effect.fn("BoatVmLifecycle.bringAttachments")(function* (
+    provider: SandboxProviderShape,
+    ref: SandboxRef,
+    snapshot: OrchestrationV2ThreadDetailSnapshot,
+    vmAttachmentsDir: string,
+  ) {
+    for (const attachment of snapshot.projection.messages.flatMap(
+      (message) => message.attachments,
+    )) {
+      const relativePath = attachmentRelativePath(attachment);
+      const localPath = resolveAttachmentPath({ attachmentsDir: input.attachmentsDir, attachment });
+      if (relativePath === null || localPath === null) continue;
+      if (yield* fileSystem.exists(localPath).pipe(Effect.orElseSucceed(() => false))) continue;
+      const partPath = `${localPath}.${ref.sandboxId}.part`;
+      yield* provider.readFile(ref, path.join(vmAttachmentsDir, relativePath)).pipe(
+        Effect.flatMap((bytes) => fileSystem.writeFile(partPath, bytes)),
+        Effect.andThen(fileSystem.rename(partPath, localPath)),
+        Effect.catch((error) =>
+          Effect.logDebug("boat.vm.lifecycle.attachmentBehind", {
+            sandboxId: ref.sandboxId,
+            attachmentId: attachment.id,
+            error: error.message,
+          }),
+        ),
+      );
+    }
   });
 
   /** Creates or updates the copy of one VM thread; "missing" once the thread is gone. */
@@ -412,16 +453,18 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
     threadId: string,
     projects: VmThreads["projects"],
   ) {
-    const snapshot = yield* readSnapshot(provider, ref, threadId);
-    if (snapshot === undefined || snapshot.projection.thread.deletedAt !== null) {
+    const read = yield* readSnapshot(provider, ref, threadId);
+    if (read === undefined || read.snapshot.projection.thread.deletedAt !== null) {
       return "missing" as const;
     }
+    const { snapshot } = read;
     const remoteUrl =
       projects.find((project) => project.id === snapshot.projection.thread.projectId)?.remoteUrl ??
       null;
     const projectId = yield* input
       .homeProjectFor(remoteUrl)
       .pipe(Effect.mapError((reason) => problem(`thread ${threadId}: ${reason}`)));
+    yield* bringAttachments(provider, ref, snapshot, read.attachmentsDir);
     const mirrored = yield* threadImport
       .mirrorThread({
         originKey: boatVmThreadOriginKey(ref.sandboxId, threadId),
@@ -659,7 +702,8 @@ export const make = Effect.fn("BoatVmLifecycle.make")(function* (input: {
       if (problems.length > 0) {
         yield* Effect.logDebug("boat.vm.lifecycle.mirrorBehind", { sandboxId, problems });
       }
-      return "kept" satisfies LifecycleOutcome;
+      const working = [...threads, ...subagents].some(({ status }) => BUSY_STATUSES.has(status));
+      return (working ? "working" : "kept") satisfies LifecycleOutcome;
     }
     if (action === "stop") {
       leaveAlone(sandboxId, deletedHere);
