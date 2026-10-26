@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  BOAT_VM_STOP_RECHECK,
   boatVmConnectionUpdates,
   boatVmCopyTarget,
   boatVmInitialTransport,
@@ -9,6 +10,7 @@ import {
   boatVmRunOnChoices,
   boatVmRunOnRow,
   boatVmSizeRows,
+  boatVmsStillListedRunning,
   type BoatVmPairing,
   type BoatVmRunOnRow,
 } from "@t3tools/client-runtime/boat-vms";
@@ -102,11 +104,12 @@ const reconciledBoatVmStatuses = new Map<EnvironmentId, BoatVm["status"]>();
  * after their VM, switched off while it is stopped, and removed once boat
  * deleted it (boatVmConnectionUpdates). It lists the VMs only while a VM is
  * saved here, and again when one stops answering, since boat stops idle VMs on
- * its own.
+ * its own, until the list no longer says that VM runs.
  */
 export function useBoatVmSavedEnvironments(): void {
   const hostId = useBoatVmHostEnvironmentId();
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const pairings = useBoatVmPairings();
   const vmIds = [...useBoatVmEnvironmentIds()];
   const vmsQuery = useEnvironmentQuery(
     hostId === null || vmIds.length === 0
@@ -114,17 +117,28 @@ export function useBoatVmSavedEnvironments(): void {
       : boatVmEnvironment.list({ environmentId: hostId, input: {} }),
   );
   const vms = vmsQuery.data?.available === true ? vmsQuery.data.vms : undefined;
-  const failingKey = vmIds
-    .filter((id) => {
-      const phase = presentations.get(id)?.connection.phase;
-      return phase === "reconnecting" || phase === "error";
-    })
-    .join(",");
+  const failing = vmIds.filter((id) => {
+    const phase = presentations.get(id)?.connection.phase;
+    return phase === "reconnecting" || phase === "error";
+  });
+  const failingKey = failing.join(",");
+  const stillRunningKey =
+    vms === undefined ? "" : boatVmsStillListedRunning(pairings, failing, vms).join(",");
 
   useEffect(() => {
     if (hostId === null || failingKey === "") return;
     appAtomRegistry.refresh(boatVmEnvironment.list({ environmentId: hostId, input: {} }));
   }, [hostId, failingKey]);
+
+  useEffect(() => {
+    if (hostId === null || stillRunningKey === "") return;
+    let attempts = 0;
+    const timer = setInterval(() => {
+      appAtomRegistry.refresh(boatVmEnvironment.list({ environmentId: hostId, input: {} }));
+      if (++attempts >= BOAT_VM_STOP_RECHECK.attempts) clearInterval(timer);
+    }, BOAT_VM_STOP_RECHECK.intervalMs);
+    return () => clearInterval(timer);
+  }, [hostId, stillRunningKey]);
 
   // Only a new list reconciles: a VM paired since the last one is not on it yet.
   useEffect(() => {

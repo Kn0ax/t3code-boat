@@ -22,6 +22,7 @@ import {
   boatVmRunOnChoices,
   boatVmRunOnRow,
   boatVmSizeRows,
+  boatVmsStillListedRunning,
   resolveBoatVmHostEnvironmentId,
   updateBoatVmLaunchEntries,
   withoutShadowedBoatVmCopies,
@@ -173,6 +174,29 @@ describe("boatVmCopyRoute", () => {
     expect(boatVmCopyRoute({ ...base, continuedHere: true, vms: [] })).toBeNull();
     expect(boatVmCopyRoute({ ...base, continuedHere: true, vms: [vm("running")] })).toBeNull();
     expect(boatVmCopyRoute({ ...base, copyThreadId: "thread-1", vms: [vm("running")] })).toBeNull();
+  });
+});
+
+describe("boatVmsStillListedRunning", () => {
+  const vm = (status: "running" | "stopping" | "stopped") => ({
+    sandboxId: "bx_run",
+    label: "acme/app",
+    status,
+  });
+
+  it("names a failing VM environment while the list still says its VM runs", () => {
+    expect(boatVmsStillListedRunning([recordedPairing], [vmEnvironment], [vm("running")])).toEqual([
+      vmEnvironment,
+    ]);
+  });
+
+  it("lets go once the list says the VM stops, or of a machine that is no VM", () => {
+    for (const status of ["stopping", "stopped"] as const) {
+      expect(boatVmsStillListedRunning([recordedPairing], [vmEnvironment], [vm(status)])).toEqual(
+        [],
+      );
+    }
+    expect(boatVmsStillListedRunning([], [vmEnvironment], [vm("running")])).toEqual([]);
   });
 });
 

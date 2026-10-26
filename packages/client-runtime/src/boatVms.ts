@@ -225,6 +225,26 @@ export const pairedBoatVm = <Vm extends { readonly sandboxId: string }>(
       ? undefined
       : vms.find((vm) => boatVmMatchesTailnetHostname(vm.sandboxId, hostname));
 
+/** How often, and how many times, the VMs are listed again while `boatVmsStillListedRunning` has any. */
+export const BOAT_VM_STOP_RECHECK = { intervalMs: 5_000, attempts: 12 } as const;
+
+/**
+ * The saved VM environments in `failing` whose VM `vms` still lists as running.
+ * A VM's server stops answering before boat says the VM is stopping, so a list
+ * taken when it stopped answering can still say it runs.
+ */
+export const boatVmsStillListedRunning = (
+  pairings: ReadonlyArray<BoatVmPairing>,
+  failing: ReadonlyArray<EnvironmentId>,
+  vms: ReadonlyArray<BoatVm>,
+): ReadonlyArray<EnvironmentId> =>
+  failing.filter((environmentId) => {
+    const pairing = pairings.find((candidate) => candidate.environmentId === environmentId);
+    if (pairing === undefined) return false;
+    const vm = pairedBoatVm(vms, pairing.recorded?.sandboxId ?? null, pairing.hostname);
+    return vm?.status === "running";
+  });
+
 /**
  * The saved environments that are one of `vms` but not yet named after it,
  * such as a VM paired before pairing named it, with the label each should have.
